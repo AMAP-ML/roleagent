@@ -128,7 +128,9 @@ log
 outputs
 
 # appworld
-data/
+# Only ignore a top-level `data/` directory used for downloads/artifacts.
+# Do NOT ignore `token_agent/data/` which is part of the source code.
+/data/
 .tmp
 *ports
 

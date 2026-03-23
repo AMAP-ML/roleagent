@@ -59,7 +59,7 @@ class TokenAgentRunner:
 
         # ---- Environment ------------------------------------------------
         ta_cfg = config.algorithm.get("token_agent", {})
-        if ta_cfg.get("enable", True) and config.env.get("env_name", "") == "mixed":
+        if ta_cfg.get("enable", True) and "mixed" in config.env.get("env_name", "").lower():
             from token_agent.environments.mixed_env_manager import make_mixed_envs
             envs, val_envs = make_mixed_envs(config)
         else:
@@ -177,7 +177,7 @@ class TokenAgentRunner:
             mapping[Role.RefPolicy] = global_pool_id
 
         # ---- Reward manager -----------------------------------------------
-        use_token_agent = ta_cfg.get("enable", True) and config.env.get("env_name", "") == "mixed"
+        use_token_agent = ta_cfg.get("enable", True) and "mixed" in config.env.get("env_name", "").lower()
         if use_token_agent:
             from token_agent.rewards.episode_reward_manager import TokenAgentEpisodeRewardManager
             overthinking_pen = ta_cfg.get("overthinking_penalty", 1.0)

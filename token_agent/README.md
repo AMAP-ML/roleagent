@@ -77,6 +77,12 @@ python -m token_agent.data.preprocess_mixed_benchmark \
 
 ```bash
 bash token_agent/scripts/train_grpo_baseline.sh Qwen/Qwen3-30B-A3B 8
+
+# 或者直接用 Hydra overrides
+python -m token_agent.trainer.main_token_agent \
+    --config-path ../config --config-name grpo_baseline_trainer \
+    actor_rollout_ref.model.path=Qwen/Qwen3-30B-A3B \
+    trainer.n_gpus_per_node=8
 ```
 
 关键配置（`grpo_baseline_trainer.yaml`）：
@@ -87,7 +93,10 @@ bash token_agent/scripts/train_grpo_baseline.sh Qwen/Qwen3-30B-A3B 8
 ### 3. 训练 Token-Agent
 
 ```bash
-bash token_agent/scripts/train_token_agent.sh Qwen/Qwen3-30B-A3B 8
+# train_token_agent.sh 接受 Hydra overrides 而非位置参数
+bash token_agent/scripts/train_token_agent.sh \
+    actor_rollout_ref.model.path=Qwen/Qwen3-30B-A3B \
+    trainer.n_gpus_per_node=8
 ```
 
 关键配置（`token_agent_trainer.yaml`）：
