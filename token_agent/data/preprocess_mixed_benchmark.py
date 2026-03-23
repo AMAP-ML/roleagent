@@ -243,6 +243,63 @@ def _process_aime_local(meta: DatasetMeta, split: str) -> List[dict]:
     assert LOCAL_DATA_DIR is not None
     root = LOCAL_DATA_DIR
 
+    # Prefer parquet (your local AIME files are parquet).
+    # - aime24.parquet: columns = [id, problem, solution, url]
+    # - AIME25_v2.parquet: columns = [id, problem, answer, year]
+    data_source = meta.data_source
+    parquet_candidates: List[str] = []
+    if "2024" in data_source:
+        parquet_candidates = ["aime24.parquet", "*aime*24*.parquet", "*aime*2024*.parquet"]
+    elif "2025" in data_source:
+        parquet_candidates = ["AIME25_v2.parquet", "*aime*25*.parquet", "*aime*2025*.parquet"]
+    else:
+        parquet_candidates = [f"*{data_source}*.parquet", "*aime*.parquet"]
+
+    parquet_path: Optional[str] = None
+    for pat in parquet_candidates:
+        matches = glob.glob(os.path.join(root, pat))
+        if matches:
+            parquet_path = matches[0]
+            break
+
+    if parquet_path and parquet_path.endswith(".parquet"):
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception as e:
+            logger.warning("Failed reading local AIME parquet %s: %s", parquet_path, e)
+        else:
+            if df is not None and len(df) > 0:
+                n = len(df)
+                cut = int(0.9 * n)
+                q_col = "problem" if "problem" in df.columns else ("question" if "question" in df.columns else None)
+                gt_col = "solution" if "solution" in df.columns else ("answer" if "answer" in df.columns else None)
+                if q_col is not None and gt_col is not None:
+                    rows: List[dict] = []
+                    for i, ex in enumerate(df.to_dict(orient="records")):
+                        is_train = i < cut
+                        if split == "train" and not is_train:
+                            continue
+                        if split == "test" and is_train:
+                            continue
+                        question = ex.get(q_col, "") or ""
+                        answer = ex.get(gt_col, "") or ""
+                        if question == "" or answer == "":
+                            continue
+                        rows.append({
+                            "data_source": meta.data_source,
+                            "task_category": meta.task_category,
+                            "prompt": _build_prompt(question),
+                            "env_kwargs": {
+                                "ground_truth": answer,
+                                "question": question,
+                                "data_source": meta.data_source,
+                                "task_category": meta.task_category,
+                            },
+                            "reward_model": {"ground_truth": answer},
+                            "extra_info": {"index": i, "split": split},
+                        })
+                    return rows
+
     # Try common filename patterns.
     data_source = meta.data_source  # e.g. aime_2024
     patterns: List[str] = []
