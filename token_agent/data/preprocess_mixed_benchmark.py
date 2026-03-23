@@ -239,7 +239,7 @@ def _process_math_local(meta: DatasetMeta, split: str) -> List[dict]:
 
 
 def _process_aime_local(meta: DatasetMeta, split: str) -> List[dict]:
-    \"\"\"Load AIME-like problems from local files if present.\"\"\"
+    """Load AIME-like problems from local files if present."""
     assert LOCAL_DATA_DIR is not None
     root = LOCAL_DATA_DIR
 
