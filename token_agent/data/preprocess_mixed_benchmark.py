@@ -656,6 +656,26 @@ def process_search_r1(meta: DatasetMeta, split: str) -> List[dict]:
     verl-agent pipeline. This function downloads the raw HF data and
     converts it into the unified schema.
     """
+    # Local-first: if your TOKEN_AGENT_DATA_DIR already contains the unified
+    # mixed parquet files (train.parquet / test.parquet) that include
+    # searchR1_* rows, we can directly filter them and skip HF download.
+    if LOCAL_DATA_DIR:
+        candidate_roots = [_local_root_for_data_source(meta.data_source), LOCAL_DATA_DIR]
+        parquet_file = "train.parquet" if split == "train" else "test.parquet"
+        for root in candidate_roots:
+            mixed_path = os.path.join(root, parquet_file)
+            if not os.path.exists(mixed_path):
+                continue
+            try:
+                df = pd.read_parquet(mixed_path)
+                if "data_source" not in df.columns:
+                    continue
+                df_sel = df[df["data_source"].astype(str) == meta.data_source]
+                if len(df_sel) > 0:
+                    return df_sel.to_dict(orient="records")
+            except Exception:
+                continue
+
     rows = []
     try:
         from datasets import load_dataset
