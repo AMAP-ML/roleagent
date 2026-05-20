@@ -41,6 +41,7 @@ Unlike prior approaches that simply concatenate full interaction histories, `ver
 `verl-agent` provides a **diverse set of RL algorithms** (including our new algorithm GiGPO) and a **rich suite of agent environments**, enabling the development of reasoning agents in both visual and text-based tasks.
 
 # News
+- [2026.05] **Role-Agent** training hooks in this fork: optional **WIA** (World-In-Agent) and **AIW** (Agent-In-World) via `algorithm.role_agent.*`, plus launch scripts under [`examples/role_agent_trainer/`](./examples/role_agent_trainer/). Details: [`docs/role_agent_alignment.md`](./docs/role_agent_alignment.md).
 - [2026.02] `HGPO` accepted at [ICLR 2026](https://iclr.cc/)! 🎉🎉🎉 [[Paper](https://openreview.net/forum?id=T8Dev99qnz)] [[Code](https://github.com/langfengQ/verl-agent/tree/master/recipe/hgpo)]
 - [2026.02] 🔥 We open-source [Dr. MAS](https://github.com/langfengQ/DrMAS), which supports stable end-to-end RL post-training of **multi-agent LLM systems**! [[Paper](https://arxiv.org/pdf/2602.08847)] [[Code](https://github.com/langfengQ/DrMAS)]
 - [2025.12] `Qwen3-VL` is supported! See example [here](./examples/gigpo_trainer/run_sokoban_qwen3vl.sh).
@@ -65,6 +66,7 @@ Unlike prior approaches that simply concatenate full interaction histories, `ver
 | **Lightweight Training** | ✅ Supports LoRA training |
 | **Environments**         | ✅ ALFWorld<br>✅ WebShop<br> ✅ Search (Tool Calling)<br> ✅ Sokoban<br>✅ Gym Cards<br>✅ AppWorld |
 | **RL Algorithms**        | ✅ GiGPO<br>✅ GRPO<br>✅ PPO<br>✅ DAPO<br>✅ GSPO<br>✅ RLOO<br>✅ REINFORCE++<br>✅ Dynamic sampling & clip-higher supported <br> and more |
+| **Role-Agent (this fork)** | ✅ **WIA**: `<predict_next>` + string similarity step-reward shaping<br>✅ **AIW**: failure-history similarity + mutable weighted train sampler ([`docs/role_agent_alignment.md`](./docs/role_agent_alignment.md)) |
 | **Prompt-based Agent**   | ✅ GPT-4o prompt-based agent  |
 
 # Framework Comparison
@@ -94,6 +96,7 @@ Unlike prior approaches that simply concatenate full interaction histories, `ver
     - [4. RLOO](#4-rloo)  
     - [5. DAPO](#5-dapo)  
     - [6. GiGPO (dynamic)](#6-gigpo-dynamic)
+    - [7. Role-Agent (WIA / AIW)](#7-role-agent-wia--aiw)
   - [LoRA](#lora)
   - [Prompt-based Agent with GPT-4o](#prompt-based-agent-with-gpt-4o)
 - [FAQ](#faq)
@@ -443,6 +446,25 @@ bash examples/gigpo_dynamic_trainer/run_alfworld.sh # ALFWorld
 ```
 ```bash
 bash examples/gigpo_dynamic_trainer/run_webshop.sh # WebShop
+```
+
+### 7. Role-Agent (WIA / AIW)
+
+This fork adds **Role-Agent–style** training options from *Role-Agent: Bootstrapping LLM Agents via Dual-Role Evolution*: **World-In-Agent (WIA)** and **Agent-In-World (AIW)**. Enable them with Hydra, e.g. `algorithm.role_agent.enable_wia=true algorithm.role_agent.enable_aiw=true`. Full behavior, GiGPO string-match parity, and caveats are documented in [`docs/role_agent_alignment.md`](./docs/role_agent_alignment.md).
+
+Launch scripts default data roots to **`/mnt`** (override `VERL_DATA_ROOT` / `SEARCH_DATA_ROOT` on your cluster). See [`examples/role_agent_trainer/README.md`](./examples/role_agent_trainer/README.md).
+
+```bash
+bash examples/role_agent_trainer/run_alfworld.sh      # ALFWorld (PPO + WIA + AIW)
+```
+```bash
+bash examples/role_agent_trainer/run_webshop.sh       # WebShop (PPO + WIA + AIW)
+```
+```bash
+bash examples/role_agent_trainer/run_webshop_gigpo.sh # WebShop (GiGPO + WIA + AIW)
+```
+```bash
+bash examples/role_agent_trainer/run_search.sh        # Search-R1 style (GiGPO + WIA + AIW)
 ```
 
 ## LoRA
