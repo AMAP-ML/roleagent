@@ -1,12 +1,31 @@
 #!/usr/bin/env bash
-# Role-Agent (WIA + AIW) on search with GiGPO (same recipe as examples/gigpo_trainer/run_search.sh). Data paths default to /mnt.
-set -x
+# Role-Agent (WIA + AIW) on search with GiGPO.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+set -x
+
+EXP_LOG_NAME="role_agent_search_wia_aiw"
+export LOG_PATH="$REPO_ROOT/log/$EXP_LOG_NAME.log"
+mkdir -p "$REPO_ROOT/log/"
+
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_TOKEN="${HF_TOKEN:-}"
+export HF_DATASETS_CACHE="/mnt/workspace/wxc/.cache/huggingface/datasets"
+export HF_HOME="/mnt/workspace/wxc/.cache/huggingface"
+export WANDB_DIR="/mnt/workspace/wxc/MathForge/wandb/$EXP_LOG_NAME"
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
+
+unset PYTHONPATH
+unset PYTHONHOME
+source /mnt/workspace/wxc/miniconda3/etc/profile.d/conda.sh
+conda activate /mnt/workspace/wxc/miniconda3/envs/skillzero
+echo "which python: $(which python)"
+echo "pwd: $(pwd)"
+
 ENGINE="${1:-vllm}"
 
-SEARCH_DATA_ROOT="${SEARCH_DATA_ROOT:-/mnt/data/searchR1_processed_direct}"
+SEARCH_DATA_ROOT="${SEARCH_DATA_ROOT:-/mnt/workspace/wxc/roleagent/agent_system/environments/env_package/search/data}"
 TRAIN_DATA="${SEARCH_DATA_ROOT}/train.parquet"
 VAL_DATA="${SEARCH_DATA_ROOT}/test.parquet"
 
@@ -29,7 +48,6 @@ python3 -m verl.trainer.main_ppo \
     data.val_files=$VAL_DATA \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
-    data.dataloader_num_workers=0 \
     data.max_prompt_length=4096 \
     data.max_response_length=512 \
     data.filter_overlong_prompts=True \
@@ -72,11 +90,12 @@ python3 -m verl.trainer.main_ppo \
     env.search.search_url='http://127.0.0.1:8000/retrieve' \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='verl_agent_search' \
-    trainer.experiment_name='gigpo_role_wia_aiw_sim0.9_qwen2.5_7b_instruct' \
+    trainer.project_name='RoleAgent_search' \
+    trainer.experiment_name=$EXP_LOG_NAME \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
     trainer.save_freq=50 \
     trainer.test_freq=50 \
     trainer.total_epochs=1 \
-    trainer.val_before_train=False "$@"
+    trainer.val_before_train=False "$@" \
+    2>&1 | tee "$LOG_PATH"

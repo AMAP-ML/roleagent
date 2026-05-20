@@ -1,23 +1,45 @@
 #!/usr/bin/env bash
-# Role-Agent (WIA + AIW) on ALFWorld with PPO/GAE. Paths default to cluster layout under /mnt (override VERL_DATA_ROOT).
-set -x
+# Role-Agent (WIA + AIW) on ALFWorld with PPO/GAE.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
+
+set -x
+
+EXP_LOG_NAME="role_agent_alfworld_wia_aiw"
+export LOG_PATH="$REPO_ROOT/log/$EXP_LOG_NAME.log"
+mkdir -p "$REPO_ROOT/log/"
+
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_TOKEN="${HF_TOKEN:-}"
+export HF_DATASETS_CACHE="/mnt/workspace/wxc/.cache/huggingface/datasets"
+export HF_HOME="/mnt/workspace/wxc/.cache/huggingface"
+export WANDB_DIR="/mnt/workspace/wxc/MathForge/wandb/$EXP_LOG_NAME"
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
+
+export ALFWORLD_DATA=/mnt/workspace/wxc/legacy/http/dat/alfworld_data
+
+unset PYTHONPATH
+unset PYTHONHOME
+source /mnt/workspace/wxc/miniconda3/etc/profile.d/conda.sh
+conda activate /mnt/workspace/wxc/miniconda3/envs/skillzero
+echo "which python: $(which python)"
+echo "pwd: $(pwd)"
 
 ENGINE="${1:-vllm}"
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-VERL_DATA_ROOT="${VERL_DATA_ROOT:-/mnt/data/verl-agent}"
+VERL_DATA_ROOT="${VERL_DATA_ROOT:-/mnt/workspace/wxc/roleagent/agent_system/environments/env_package/alfworld/alfworld_data}"
 
 num_cpus_per_env_worker=0.1
 
-train_data_size=128
+train_data_size=64
 val_data_size=128
 
-python3 -m examples.data_preprocess.prepare \
-    --mode 'text' \
-    --train_data_size "$train_data_size" \
-    --val_data_size "$val_data_size"
+# Data already exists locally; skip download/preprocessing
+# python3 -m examples.data_preprocess.prepare \
+#     --mode 'text' \
+#     --train_data_size "$train_data_size" \
+#     --val_data_size "$val_data_size"
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=gae \
@@ -31,7 +53,6 @@ python3 -m verl.trainer.main_ppo \
     data.val_files="${VERL_DATA_ROOT}/text/test.parquet" \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
-    data.dataloader_num_workers=0 \
     data.max_prompt_length=2048 \
     data.max_response_length=512 \
     data.filter_overlong_prompts=True \
@@ -75,11 +96,12 @@ python3 -m verl.trainer.main_ppo \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
-    trainer.project_name='verl_agent_alfworld' \
-    trainer.experiment_name='ppo_role_wia_aiw_qwen2.5_1.5b' \
+    trainer.project_name='RoleAgent_alfworld' \
+    trainer.experiment_name=$EXP_LOG_NAME \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.test_freq=5 \
     trainer.total_epochs=150 \
-    trainer.val_before_train=True "$@"
+    trainer.val_before_train=True "$@" \
+    2>&1 | tee "$LOG_PATH"
