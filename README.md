@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/roleagent.png" alt="Role-Agent" width="85%">
+  <img src="./docs/roleagent.png" alt="Role-Agent" width="60%">
 </p>
 
 # Role-Agent
