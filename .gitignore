@@ -5,6 +5,7 @@
 /conda_change.sh
 /download_models.ipynb
 /submit/
+/ai-hub-cli
 
 **/*.pt
 **/checkpoints
