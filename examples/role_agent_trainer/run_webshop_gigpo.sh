@@ -44,8 +44,6 @@ ENGINE="${1:-vllm}"
 ulimit -u 65536
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-VERL_DATA_ROOT="${VERL_DATA_ROOT:-/mnt/workspace/wxc/roleagent/agent_system/environments/env_package/alfworld/alfworld_data}"
-
 num_cpus_per_env_worker=0.1
 
 train_data_size=16
@@ -53,11 +51,19 @@ val_data_size=128
 group_size=8
 mode="mean_norm"
 
-# Data already exists locally; skip download/preprocessing
-# python3 -m examples.data_preprocess.prepare \
-#     --mode 'text' \
-#     --train_data_size "$train_data_size" \
-#     --val_data_size $((val_data_size * 2))
+VERL_DATA_ROOT="${VERL_DATA_ROOT:-$HOME/data/verl-agent}"
+TRAIN_DATA="${VERL_DATA_ROOT}/text/train.parquet"
+VAL_DATA="${VERL_DATA_ROOT}/text/test.parquet"
+
+# The parquet files only provide modality and sample-count metadata; WebShop
+# tasks are created by the environment manager from WebShop assets.
+if [[ ! -f "$TRAIN_DATA" || ! -f "$VAL_DATA" ]]; then
+    python3 -m examples.data_preprocess.prepare \
+        --mode 'text' \
+        --local_dir "$VERL_DATA_ROOT" \
+        --train_data_size "$train_data_size" \
+        --val_data_size $((val_data_size * 2))
+fi
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=gigpo \
@@ -68,8 +74,8 @@ python3 -m verl.trainer.main_ppo \
     algorithm.role_agent.enable_aiw=true \
     algorithm.role_agent.text_match_max_chars=0 \
     algorithm.role_agent.aiw_similarity_thresh=0.0 \
-    data.train_files="${VERL_DATA_ROOT}/text/train.parquet" \
-    data.val_files="${VERL_DATA_ROOT}/text/test.parquet" \
+    data.train_files="$TRAIN_DATA" \
+    data.val_files="$VAL_DATA" \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
     data.max_prompt_length=4096 \
