@@ -27,7 +27,7 @@ echo ""
 
 python -m token_agent.analysis.collect_eval_records \
     --model_path "${MODEL_PATH}" \
-    --data_path ~/data/token_agent_mixed/test.parquet \
+    --data_path /mnt/workspace/wxc/roleagent/data/token_agent_mixedtest.parquet \
     --output_dir "${OUTPUT_DIR}" \
     --max_samples "${MAX_SAMPLES}" \
     --backend "${BACKEND}" \

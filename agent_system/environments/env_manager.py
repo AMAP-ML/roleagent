@@ -66,6 +66,18 @@ class SearchEnvironmentManager(EnvironmentManagerBase):
         obs, infos = self.envs.reset(kwargs=kwargs)
         self.tasks = obs
 
+        # Store data_source per sample so _process_batch can tag success_rate by dataset.
+        self.data_sources: List[str] = []
+        for kw in (kwargs or []):
+            if isinstance(kw, str):
+                import json
+                try:
+                    kw = json.loads(kw)
+                except Exception:
+                    kw = {}
+            ds = kw.get("data_source", "search_qa") if isinstance(kw, dict) else "search_qa"
+            self.data_sources.append(ds)
+
         self.memory.reset(batch_size=len(obs))
 
         observations = {
@@ -92,6 +104,9 @@ class SearchEnvironmentManager(EnvironmentManagerBase):
         
         for i, info in enumerate(infos):
             info["is_action_valid"] = to_numpy(valids[i])
+            # Inject data_source into info so _process_batch can tag per-dataset success_rate.
+            if hasattr(self, "data_sources") and i < len(self.data_sources):
+                info["data_source"] = self.data_sources[i]
 
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)

@@ -78,7 +78,7 @@ CONFIG = {
         "expected_flops_tuple": (185867930959872 / 1e12, 692924253732864 / 1e12),
     },
     "qwen3_moe": {
-        "config": {  # Qwen/Qwen3-30B-A3B-Base
+        "config": {  # Qwen/Qwen2.5-3B-Instruct-Base
             "model_type": "qwen3_moe",
             "hidden_size": 2048,
             "vocab_size": 151936,

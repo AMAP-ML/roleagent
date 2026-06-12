@@ -6,7 +6,7 @@ Usage::
 
     python -m token_agent.analysis.collect_eval_records \
         --model_path <checkpoint_path> \
-        --data_path ~/data/token_agent_mixed/test.parquet \
+        --data_path /mnt/workspace/wxc/roleagent/data/token_agent_mixedtest.parquet \
         --output_dir ./analysis_output/ \
         --max_samples 500 \
         --temperature 0.3
@@ -163,7 +163,7 @@ def main():
         description="Evaluate a model on the mixed benchmark and analyze failure modes."
     )
     parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--data_path", type=str, default="~/data/token_agent_mixed/test.parquet")
+    parser.add_argument("--data_path", type=str, default="/mnt/workspace/wxc/roleagent/data/token_agent_mixedtest.parquet")
     parser.add_argument("--output_dir", type=str, default="./analysis_output")
     parser.add_argument("--max_samples", type=int, default=500)
     parser.add_argument("--temperature", type=float, default=0.3)

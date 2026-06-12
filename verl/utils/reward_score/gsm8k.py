@@ -41,6 +41,19 @@ def extract_solution(solution_str, method="strict"):
     return final_answer
 
 
+def extract_ground_truth(ground_truth: str) -> str:
+    """Normalise ground_truth to a plain number string.
+
+    The raw GSM8K ``answer`` field contains the full solution text ending with
+    ``#### <number>``.  When the parquet is built without pre-extracting the
+    number, ground_truth will be the full string.  This helper handles both
+    cases: a plain number string (already extracted) and the full solution text.
+    """
+    if "####" in str(ground_truth):
+        return str(ground_truth).split("####")[-1].strip().replace(",", "").replace("$", "")
+    return str(ground_truth).strip().replace(",", "").replace("$", "")
+
+
 def compute_score(solution_str, ground_truth, method="strict", format_score=0.0, score=1.0):
     """The scoring function for GSM8k.
 
@@ -54,10 +67,11 @@ def compute_score(solution_str, ground_truth, method="strict", format_score=0.0,
         score: the score for the correct answer
     """
     answer = extract_solution(solution_str=solution_str, method=method)
+    normalised_ground_truth = extract_ground_truth(ground_truth)
     if answer is None:
         return 0
     else:
-        if answer == ground_truth:
+        if answer == normalised_ground_truth:
             return score
         else:
             return format_score

@@ -1,19 +1,8 @@
-"""
-Single-turn environment wrapper for tasks that require only one model response
-(math reasoning, quick QA, direct QA).
-
-The model generates a single response; we compute a reward and mark done=True.
-This lets single-turn tasks participate in the same multi-turn rollout loop
-used by interactive environments.
-"""
-
 from typing import Any, Dict, List, Tuple
 
-import gym
 import numpy as np
 
-
-class SingleTurnEnvWrapper(gym.Env):
+class SingleTurnEnvWrapper:
     """
     Vectorised 1-step environment for non-interactive tasks.
 

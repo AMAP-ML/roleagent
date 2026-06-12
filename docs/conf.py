@@ -31,9 +31,9 @@
 
 # -- Project information -----------------------------------------------------
 
-project = "verl"
-copyright = "2024 ByteDance Seed Foundation MLSys Team"
-author = "Guangming Sheng, Chi Zhang, Yanghua Peng, Haibin Lin"
+project = "Role-Agent"
+copyright = "2026 Role-Agent contributors"
+author = "xuc865"
 
 
 # -- General configuration ---------------------------------------------------

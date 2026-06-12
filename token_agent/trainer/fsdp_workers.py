@@ -4,8 +4,7 @@ after model initialization.
 """
 
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker
-from verl.single_controller.base import register
-from verl.single_controller.base.decorator import Dispatch
+from verl.single_controller.base.decorator import Dispatch, register
 
 
 class _TokenAgentActorMixin:

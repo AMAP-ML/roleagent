@@ -51,7 +51,7 @@ echo "Submitting job: $JOB_NAME"
 echo "Entry script: $ENTRY_SCRIPT"
 
 ../ai-hub-cli train mdl \
-  --name=test \
+  --name=ehg \
   --job_name="${JOB_NAME}" \
   --entry="bash /mnt/workspace/wxc/roleagent/submit/sen.sh --env-path ${ENTRY_SCRIPT}" \
   --file.cluster_file="${cluster_file}" \

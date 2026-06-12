@@ -1,5 +1,25 @@
 #!/usr/bin/env bash
 # Role-Agent (WIA + AIW) on search with GiGPO.
+
+# --- Force correct Python: inject conda env bin into PATH directly ---
+unset PYTHONPATH
+unset PYTHONHOME
+
+CONDA_ENV_BIN="${CONDA_ENV_BIN:-/mnt/workspace/wxc/miniconda3/envs/skillzero/bin}"
+export PATH="$CONDA_ENV_BIN:$PATH"
+export CONDA_DEFAULT_ENV=skillzero
+export CONDA_PREFIX="$(dirname "$CONDA_ENV_BIN")"
+
+# Randomize MASTER_PORT to avoid collision with other jobs
+export MASTER_PORT="${MASTER_PORT:-$((29600 + RANDOM % 100))}"
+
+# Load tokens from bashrc without polluting PATH
+eval "$(grep -E '^export (HF_TOKEN|WANDB_API_KEY|ACCESS_ID|ACCESS_KEY|OSS_ACCESS_ID|OSS_ACCESS_KEY)=' ~/.bashrc 2>/dev/null)"
+
+echo "which python: $(which python)"
+echo "python version: $(python --version)"
+
+# --- Project setup ---
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -15,12 +35,9 @@ export HF_DATASETS_CACHE="/mnt/workspace/wxc/.cache/huggingface/datasets"
 export HF_HOME="/mnt/workspace/wxc/.cache/huggingface"
 export WANDB_DIR="/mnt/workspace/wxc/MathForge/wandb/$EXP_LOG_NAME"
 export WANDB_API_KEY="${WANDB_API_KEY:-}"
+export WANDB_MODE="${WANDB_MODE:-offline}"
 
-unset PYTHONPATH
-unset PYTHONHOME
-source /mnt/workspace/wxc/miniconda3/etc/profile.d/conda.sh
-conda activate /mnt/workspace/wxc/miniconda3/envs/skillzero
-echo "which python: $(which python)"
+eval "$(grep -E '^export (HF_TOKEN|WANDB_API_KEY|ACCESS_ID|ACCESS_KEY|OSS_ACCESS_ID|OSS_ACCESS_KEY)=' ~/.bashrc 2>/dev/null)"
 echo "pwd: $(pwd)"
 
 ENGINE="${1:-vllm}"

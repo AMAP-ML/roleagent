@@ -7,8 +7,8 @@ defaults:
   - _self_
 
 data:
-  train_files: ~/data/token_agent_mixed/train.parquet
-  val_files: ~/data/token_agent_mixed/test.parquet
+  train_files: /mnt/workspace/wxc/roleagent/data/token_agent_mixed/train.parquet
+  val_files: /mnt/workspace/wxc/roleagent/data/token_agent_mixed/test.parquet
   max_prompt_length: 2048
   max_response_length: 2048
   train_batch_size: 32
@@ -20,7 +20,7 @@ data:
 
 actor_rollout_ref:
   model:
-    path: Qwen/Qwen3-30B-A3B
+    path: Qwen/Qwen2.5-3B-Instruct
   actor:
     loss_agg_mode: token-mean
     clip_ratio: 0.2

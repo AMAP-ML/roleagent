@@ -1,4 +1,21 @@
 
+# Local/private artifacts
+/.setup_env.sh
+/.setup_env_ret.sh
+/conda_change.sh
+/download_models.ipynb
+/submit/
+/ai-hub-cli
+/failure_evolution_plots/
+/failure_mode_plots/
+/scripts/label_failure_modes.py
+/scripts/plot_failure_mode_bar.py
+/scripts/plot_failure_mode_bar_v2.py
+/scripts/visualize_aiw_failures.py
+/scripts/visualize_failure_evolution.py
+/scripts/visualize_task_failure_modes.py
+/try.ipynb
+
 **/*.pt
 **/checkpoints
 **/wget-log
@@ -58,6 +75,7 @@ nosetests.xml
 coverage.xml
 *,cover
 .hypothesis/
+.pytest_cache/
 
 # Translations
 *.mo
@@ -105,6 +123,10 @@ ENV/
 
 # vscode
 .vscode
+/.git/
+/.git-new/
+/.agents/
+/.codex/
 
 # Mac
 .DS_Store
@@ -117,6 +139,11 @@ ENV/
 
 # data
 *.parquet
+/agent_system/environments/env_package/alfworld/alfworld_data/
+/agent_system/environments/env_package/search/data/
+/checkpoints/
+/core-*
+/core-ray-dashboard-*
 
 
 # local logs

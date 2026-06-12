@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import copy
+import json
 import logging
 import os
 import re
@@ -114,6 +115,9 @@ class RLHFDataset(Dataset):
         self.chat_template_func = config.get("chat_template_func", None)
         self.need_tools_kwargs = config.get("need_tools_kwargs", False)
         self.filter_prompts = config.get("filter_prompts", True)
+        # Optional comma-separated whitelist of data_source values to keep; empty string means keep all.
+        val_data_sources_str = config.get("val_data_sources_str", "")
+        self.val_data_sources = [s.strip() for s in val_data_sources_str.split(",") if s.strip()] if val_data_sources_str else []
         self.serialize_dataset = False
         self._download()
         self._read_files_and_tokenize()
@@ -134,6 +138,16 @@ class RLHFDataset(Dataset):
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
 
         print(f"dataset len: {len(self.dataframe)}")
+
+        # filter by data_source whitelist if specified
+        if self.val_data_sources:
+            allowed = set(self.val_data_sources)
+            self.dataframe = self.dataframe.filter(
+                lambda doc: doc["data_source"] in allowed,
+                num_proc=self.num_workers,
+                desc=f"Filtering by data_source whitelist: {sorted(allowed)}",
+            )
+            print(f"dataset len after data_source filter: {len(self.dataframe)}")
 
         # filter out too long prompts
         if self.filter_overlong_prompts:

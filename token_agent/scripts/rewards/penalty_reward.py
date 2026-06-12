@@ -1,25 +1,19 @@
-"""
-Reward computation with Token-Agent penalties:
-
-1. **Over-reasoning penalty**: If the task is quick_qa (1) or direct_qa (2)
-   and the model produced a ``<think>`` block, penalise.
-2. **Wrong-tool penalty**: If the model used a tool belonging to a different
-   task category, subtract a fixed penalty (default 20 %) from the reward,
-   but only when the base reward >= 0.2 to avoid going negative.
-"""
-
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from token_agent.data.dataset_registry import get_task_category
 
-# ---------------------------------------------------------------------------
-# Tool detection
-# ---------------------------------------------------------------------------
-
 _SEARCH_PATTERN = re.compile(r"<search>.*?</search>", re.DOTALL)
 _ACTION_PATTERN = re.compile(r"<action>.*?</action>", re.DOTALL)
-_THINK_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL)
+_THINK_PATTERN = re.compile(r".*? ", re.DOTALL)
+
+CATEGORY_ALLOWED_TOOLS: Dict[int, Set[str]] = {
+    0: set(),
+    1: set(),
+    2: set(),
+    3: {"search"},
+    4: {"action"},
+}
 
 
 def _detect_tools_used(response: str) -> Set[str]:
@@ -35,17 +29,6 @@ def _has_think_block(response: str) -> bool:
     return bool(_THINK_PATTERN.search(response))
 
 
-# Which tools are *allowed* for each category.
-# Empty set = no tools expected.
-CATEGORY_ALLOWED_TOOLS: Dict[int, Set[str]] = {
-    0: set(),            # math_reasoning
-    1: set(),            # quick_qa
-    2: set(),            # direct_qa
-    3: {"search"},       # search_qa
-    4: {"action"},       # action_env
-}
-
-
 def _detect_wrong_tool(response: str, task_category: int) -> bool:
     used = _detect_tools_used(response)
     if not used:
@@ -54,12 +37,7 @@ def _detect_wrong_tool(response: str, task_category: int) -> bool:
     return bool(used - allowed)
 
 
-# ---------------------------------------------------------------------------
-# Base reward helpers for newly-added datasets
-# ---------------------------------------------------------------------------
-
 def _squad_score(solution_str: str, ground_truth) -> float:
-    """F1 / EM for SQuAD-style extractive QA."""
     from verl.utils.reward_score.search_r1_like_qa_em import (
         extract_solution,
         em_check,
@@ -81,7 +59,6 @@ def _squad_score(solution_str: str, ground_truth) -> float:
 
 
 def _simple_em_score(solution_str: str, ground_truth) -> float:
-    """Simple exact-match scoring for SimpleQA / AA-Omniscience."""
     from verl.utils.reward_score.search_r1_like_qa_em import (
         extract_solution,
         em_check,
@@ -97,9 +74,17 @@ def _simple_em_score(solution_str: str, ground_truth) -> float:
     return 1.0 if em_check(answer, targets) else 0.0
 
 
-# ---------------------------------------------------------------------------
-# Extended compute_score that covers new data_sources
-# ---------------------------------------------------------------------------
+# SearchR1 data_source names as they appear in the raw search_qa parquet.
+# The parquet preserves the original data_source from SearchR1 preprocessing
+# (e.g. "nq", "triviaqa") rather than the unified "search_qa" label.
+_SEARCH_R1_DATA_SOURCES = {
+    "nq", "triviaqa", "popqa", "hotpotqa", "2wikimultihopqa", "musique",
+    "bamboogle", "search_qa",
+    # Also handle the "searchR1_*" prefix variants just in case.
+    "searchR1_nq", "searchR1_triviaqa", "searchR1_popqa", "searchR1_hotpotqa",
+    "searchR1_2wikimultihopqa", "searchR1_musique", "searchR1_bamboogle",
+}
+
 
 def compute_base_reward(
     data_source: str,
@@ -107,24 +92,27 @@ def compute_base_reward(
     ground_truth: Any,
     extra_info: Optional[Dict] = None,
 ) -> float:
-    """
-    Compute the raw reward for a response. Falls back to the
-    existing ``default_compute_score`` for datasets already handled
-    by verl, and adds support for squad / simpleqa / aa_omniscience.
-    """
     if data_source == "squad":
         return _squad_score(solution_str, ground_truth)
-    if data_source in ("simpleqa", "aa_omniscience"):
+
+    if data_source in ("simpleqa",):
+        return _simple_em_score(solution_str, ground_truth)
+
+    if data_source == "openai/gsm8k":
+        from verl.utils.reward_score import gsm8k
+        return float(gsm8k.compute_score(solution_str, ground_truth, method="flexible"))
+
+    # SearchR1-style QA datasets: use the same EM scoring as the original SearchR1.
+    # The raw search_qa parquet preserves the original data_source names ("nq",
+    # "triviaqa", etc.) rather than the unified "search_qa" label, so we must
+    # handle them explicitly here instead of falling through to default_compute_score.
+    if data_source in _SEARCH_R1_DATA_SOURCES:
         return _simple_em_score(solution_str, ground_truth)
 
     from verl.utils.reward_score import default_compute_score
     res = default_compute_score(data_source, solution_str, ground_truth, extra_info)
     return float(res) if not isinstance(res, dict) else float(res.get("score", 0.0))
 
-
-# ---------------------------------------------------------------------------
-# Main: reward + penalties
-# ---------------------------------------------------------------------------
 
 def compute_reward_with_penalties(
     data_source: str,
@@ -135,28 +123,14 @@ def compute_reward_with_penalties(
     overthinking_penalty: float = 1.0,
     wrong_tool_penalty: float = 0.2,
 ) -> float:
-    """
-    Compute reward with Token-Agent-specific penalties.
-
-    Parameters
-    ----------
-    overthinking_penalty : float
-        How much to subtract when <think> is used on quick_qa / direct_qa.
-        Default 1.0 means the reward goes to 0 (since max base reward = 1).
-    wrong_tool_penalty : float
-        Fixed amount to subtract when a tool from the wrong category is used.
-        Only applied when ``base_reward >= wrong_tool_penalty``.
-    """
     if task_category is None:
         task_category = get_task_category(data_source)
 
     base_reward = compute_base_reward(data_source, solution_str, ground_truth, extra_info)
 
-    # --- Over-reasoning penalty ---
     if task_category in (1, 2) and _has_think_block(solution_str):
         base_reward = max(0.0, base_reward - overthinking_penalty)
 
-    # --- Wrong-tool penalty ---
     if base_reward >= wrong_tool_penalty and _detect_wrong_tool(solution_str, task_category):
         base_reward = max(0.0, base_reward - wrong_tool_penalty)
 

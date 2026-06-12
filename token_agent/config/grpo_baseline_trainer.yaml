@@ -7,12 +7,16 @@ defaults:
   - _self_
 
 data:
-  train_files: ~/data/token_agent_mixed/train.parquet
-  val_files: ~/data/token_agent_mixed/test.parquet
+  train_files: /mnt/workspace/wxc/roleagent/data/token_agent_mixed/train.parquet
+  val_files: /mnt/workspace/wxc/roleagent/data/token_agent_mixed/test.parquet
   max_prompt_length: 2048
   max_response_length: 2048
   train_batch_size: 32
   val_batch_size: 8
+  # Comma-separated whitelist of data_source values to include in validation.
+  # Empty string means use all data sources in the val parquet.
+  # Example: "openai/gsm8k,lighteval/MATH"
+  val_data_sources_str: ""
   return_raw_chat: True
   shuffle: True
   filter_overlong_prompts: False
@@ -20,7 +24,7 @@ data:
 
 actor_rollout_ref:
   model:
-    path: Qwen/Qwen3-30B-A3B
+    path: Qwen/Qwen2.5-3B-Instruct
   actor:
     loss_agg_mode: token-mean
     clip_ratio: 0.2
@@ -67,8 +71,8 @@ trainer:
   nnodes: 1
   n_gpus_per_node: 8
   save_freq: 100
-  test_freq: 50
-  val_before_train: True
+  test_freq: 999999
+  val_before_train: False
   logger: ['console', 'wandb']
 
 env:
@@ -85,7 +89,7 @@ env:
     active_categories: [0, 1, 2, 3, 4]
   search:
     log_requests: false
-    search_url: "http://127.0.0.1:8000/retrieve"
+    search_url: "http://127.0.0.1:8866/retrieve"
     topk: 3
     timeout: 60
   alfworld:

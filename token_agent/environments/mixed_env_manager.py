@@ -45,9 +45,24 @@ class MixedEnvironmentManager:
         """
         ``kwargs`` is either a list[dict] (one per sample) with a
         ``task_category`` key, or ``None`` for env-only datasets.
+
+        When loaded from parquet via non_tensor_batch, each element may be a
+        JSON-serialized string rather than a dict; we deserialize it here.
         """
         if kwargs is None:
             kwargs = [{}] * self._batch_size
+
+        # Deserialize if elements are JSON strings (parquet storage artifact)
+        deserialized_kwargs = []
+        for kw in kwargs:
+            if isinstance(kw, str):
+                import json
+                try:
+                    kw = json.loads(kw)
+                except (json.JSONDecodeError, ValueError):
+                    kw = {}
+            deserialized_kwargs.append(kw if isinstance(kw, dict) else {})
+        kwargs = deserialized_kwargs
 
         self._batch_size = len(kwargs)
         self._cat_ids = np.array(

@@ -1,5 +1,25 @@
 #!/usr/bin/env bash
-# Role-Agent (WIA + AIW) on WebShop with PPO/GAE.
+# Role-Agent (WIA + AIW) on WebShop with GiGPO.
+
+# --- Force correct Python: inject conda env bin into PATH directly ---
+unset PYTHONPATH
+unset PYTHONHOME
+
+CONDA_ENV_BIN="${CONDA_ENV_BIN:-/mnt/workspace/wxc/miniconda3/envs/skillzero/bin}"
+export PATH="$CONDA_ENV_BIN:$PATH"
+export CONDA_DEFAULT_ENV=skillzero
+export CONDA_PREFIX="$(dirname "$CONDA_ENV_BIN")"
+
+# Randomize MASTER_PORT to avoid collision with other jobs
+export MASTER_PORT="${MASTER_PORT:-$((29700 + RANDOM % 100))}"
+
+# Load tokens from bashrc without polluting PATH
+eval "$(grep -E '^export (HF_TOKEN|WANDB_API_KEY|ACCESS_ID|ACCESS_KEY|OSS_ACCESS_ID|OSS_ACCESS_KEY)=' ~/.bashrc 2>/dev/null)"
+
+echo "which python: $(which python)"
+echo "python version: $(python --version)"
+
+# --- Project setup ---
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -15,41 +35,47 @@ export HF_DATASETS_CACHE="/mnt/workspace/wxc/.cache/huggingface/datasets"
 export HF_HOME="/mnt/workspace/wxc/.cache/huggingface"
 export WANDB_DIR="/mnt/workspace/wxc/MathForge/wandb/$EXP_LOG_NAME"
 export WANDB_API_KEY="${WANDB_API_KEY:-}"
+export WANDB_MODE="${WANDB_MODE:-offline}"
 
-unset PYTHONPATH
-unset PYTHONHOME
-source /mnt/workspace/wxc/miniconda3/etc/profile.d/conda.sh
-conda activate /mnt/workspace/wxc/miniconda3/envs/skillzero
-echo "which python: $(which python)"
+eval "$(grep -E '^export (HF_TOKEN|WANDB_API_KEY|ACCESS_ID|ACCESS_KEY|OSS_ACCESS_ID|OSS_ACCESS_KEY)=' ~/.bashrc 2>/dev/null)"
 echo "pwd: $(pwd)"
 
 ENGINE="${1:-vllm}"
 ulimit -u 65536
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-VERL_DATA_ROOT="${VERL_DATA_ROOT:-/mnt/workspace/wxc/roleagent/agent_system/environments/env_package/alfworld/alfworld_data}"
-
 num_cpus_per_env_worker=0.1
 
-train_data_size=128
+train_data_size=16
 val_data_size=128
+group_size=8
+mode="mean_norm"
 
-# Data already exists locally; skip download/preprocessing
-# python3 -m examples.data_preprocess.prepare \
-#     --mode 'text' \
-#     --train_data_size "$train_data_size" \
-#     --val_data_size "$val_data_size"
+VERL_DATA_ROOT="${VERL_DATA_ROOT:-$HOME/data/verl-agent}"
+TRAIN_DATA="${VERL_DATA_ROOT}/text/train.parquet"
+VAL_DATA="${VERL_DATA_ROOT}/text/test.parquet"
+
+# The parquet files only provide modality and sample-count metadata; WebShop
+# tasks are created by the environment manager from WebShop assets.
+if [[ ! -f "$TRAIN_DATA" || ! -f "$VAL_DATA" ]]; then
+    python3 -m examples.data_preprocess.prepare \
+        --mode 'text' \
+        --local_dir "$VERL_DATA_ROOT" \
+        --train_data_size "$train_data_size" \
+        --val_data_size $((val_data_size * 2))
+fi
 
 python3 -m verl.trainer.main_ppo \
-    algorithm.adv_estimator=gae \
+    algorithm.adv_estimator=gigpo \
     algorithm.gamma=0.95 \
-    algorithm.lam=0.95 \
+    algorithm.gigpo.step_advantage_w=1.0 \
+    algorithm.gigpo.mode=$mode \
     algorithm.role_agent.enable_wia=true \
     algorithm.role_agent.enable_aiw=true \
     algorithm.role_agent.text_match_max_chars=0 \
     algorithm.role_agent.aiw_similarity_thresh=0.0 \
-    data.train_files="${VERL_DATA_ROOT}/text/train.parquet" \
-    data.val_files="${VERL_DATA_ROOT}/text/test.parquet" \
+    data.train_files="$TRAIN_DATA" \
+    data.val_files="$VAL_DATA" \
     data.train_batch_size=$train_data_size \
     data.val_batch_size=$val_data_size \
     data.max_prompt_length=4096 \
@@ -81,17 +107,11 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
-    critic.optim.lr=1e-5 \
-    critic.model.use_remove_padding=True \
-    critic.model.path=/mnt/workspace/wxc/Agent/models/Qwen2.5-1.5B-Instruct \
-    critic.model.enable_gradient_checkpointing=True \
-    critic.ppo_micro_batch_size_per_gpu=4 \
-    critic.model.fsdp_config.param_offload=False \
-    critic.model.fsdp_config.optimizer_offload=False \
     algorithm.use_kl_in_reward=False \
     env.env_name=Webshop \
     env.seed=0 \
     env.max_steps=15 \
+    env.rollout.n=$group_size \
     env.resources_per_worker.num_cpus=$num_cpus_per_env_worker \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \

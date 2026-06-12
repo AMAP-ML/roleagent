@@ -234,6 +234,24 @@ def verify(solution_str: str, answer: str, strict_box_verify: bool = False, paus
     return correct, pred
 
 
+def _extract_gt_answer(ground_truth: str) -> str:
+    """Normalise ground_truth to a plain answer string.
+
+    Handles three formats found in the mixed-benchmark parquet:
+    - Plain answer string (already extracted): returned as-is after normalize.
+    - ``\\boxed{204}`` format (aime_2024): boxed content is extracted first.
+    - Full solution text containing ``\\boxed{}``: last boxed content extracted.
+    """
+    gt_str = str(ground_truth).strip()
+    boxed = last_boxed_only_string(gt_str)
+    if boxed is not None:
+        try:
+            return normalize_final_answer(remove_boxed(boxed))
+        except Exception:
+            pass
+    return normalize_final_answer(gt_str)
+
+
 def compute_score(
     solution_str: str,
     ground_truth: str,
@@ -251,17 +269,27 @@ def compute_score(
     Returns:
         Reward score (1.0 for correct, -1.0 for incorrect)
     """
-    # Limit solution length for efficiency
-    solution_str = solution_str[-300:]  # The longest answer in MATH-500 has 159 characters
+    # Normalise ground truth to a plain answer string regardless of whether
+    # the parquet stores the raw solution text or an already-extracted answer.
+    normalised_gt = _extract_gt_answer(ground_truth)
 
-    # Verify the solution
-    correct, pred = verify(solution_str, ground_truth, strict_box_verify, pause_tokens_index)
+    # Try boxed extraction first (our format hint asks for \boxed{}).
+    # Fall back to Minerva-style "Answer: ..." pattern if no boxed found.
+    tail = solution_str[-300:]
+    boxed_in_solution = last_boxed_only_string(tail)
+    if boxed_in_solution is not None:
+        try:
+            pred = normalize_final_answer(remove_boxed(boxed_in_solution))
+            correct = pred == normalised_gt
+            return {"score": 1.0 if correct else -1.0, "acc": correct, "pred": pred}
+        except Exception:
+            pass
 
+    # Fallback: Minerva-style answer extraction
+    correct, pred = is_correct_minerva(tail, normalised_gt, gt_need_extract=False)
     reward = 1.0 if correct else -1.0
-    acc = correct
-
     return {
         "score": reward,
-        "acc": acc,
+        "acc": correct,
         "pred": pred,
     }

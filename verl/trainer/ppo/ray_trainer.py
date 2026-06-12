@@ -171,7 +171,7 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     token_level_scores = data.batch["token_level_scores"]
     batch_size = data.batch.batch_size[0]
 
-    if multi_turn:
+    if multi_turn and "loss_mask" in data.batch.keys():
         loss_mask = data.batch["loss_mask"]
         response_mask = loss_mask[:, -response_length:]
     else:
@@ -283,10 +283,11 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
     elif adv_estimator == AdvantageEstimator.GRPO:
         # TODO: test on more adv estimator type
         grpo_calculation_mask = data.batch["response_mask"]
-        if multi_turn:
-            # If multi-turn, replace the mask with the relevant part of loss_mask
-            response_length = grpo_calculation_mask.size(1)  # Get length from the initial response mask
-            grpo_calculation_mask = data.batch["loss_mask"][:, -response_length:]  # This mask is the one intended for GRPO
+        if multi_turn and "loss_mask" in data.batch.keys():
+            # If multi-turn and loss_mask is available, use it for more precise masking.
+            # loss_mask covers the full sequence; slice the last response_length tokens to align with response_mask.
+            response_length = grpo_calculation_mask.size(1)
+            grpo_calculation_mask = data.batch["loss_mask"][:, -response_length:]
         # Call compute_grpo_outcome_advantage with parameters matching its definition
         advantages, returns = core_algos.compute_grpo_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
@@ -595,6 +596,12 @@ class RayPPOTrainer:
 
             ra = OmegaConf.select(self.config, "algorithm.role_agent", default=None)
             ra = OmegaConf.to_container(ra, resolve=True) if ra is not None else {}
+            # Build dump path for failure history visualization
+            exp_name = self.config.trainer.get("experiment_name", "default")
+            log_path = os.environ.get("LOG_PATH", ".")
+            log_dir = os.path.dirname(log_path) if os.path.isfile(log_path) or log_path.endswith(".log") else log_path
+            failure_dump_dir = os.path.join(log_dir, "failure_history")
+            failure_dump_path = os.path.join(failure_dump_dir, f"{exp_name}_failures.jsonl")
             self.aiw_curriculum = AIWCurriculum(
                 len(self.train_dataset),
                 top_k=int(ra.get("aiw_top_k", 3)),
@@ -603,6 +610,7 @@ class RayPPOTrainer:
                 max_history=int(ra.get("aiw_max_history", 512)),
                 similarity_thresh=float(ra.get("aiw_similarity_thresh", 0.0)),
                 text_match_max_chars=int(ra.get("text_match_max_chars", 0)),
+                dump_path=failure_dump_path,
             )
             gen = torch.Generator().manual_seed(int(self.config.data.get("seed", 1)))
             train_sampler = MutableWeightedSampler(len(self.train_dataset), self.aiw_curriculum.weights, gen)
@@ -962,6 +970,22 @@ class RayPPOTrainer:
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
 
+        # 将本地 metrics log 同步到 OSS（供离线队列环境使用）
+        # 通过 trainer.oss_log_upload_cmd 配置上传命令，命令中用 {log_dir} 占位符表示日志目录
+        # 示例：ossutil64 cp -r -u {log_dir} oss://your-bucket/your-path/logs
+        oss_log_upload_cmd = self.config.trainer.get("oss_log_upload_cmd", None)
+        if oss_log_upload_cmd:
+            import subprocess
+            local_file_logger = getattr(self, "_local_file_logger_ref", None)
+            log_dir = local_file_logger.get_log_dir() if local_file_logger else "./verl_logs"
+            resolved_cmd = oss_log_upload_cmd.replace("{log_dir}", log_dir)
+            print(f"[Checkpoint] Uploading metrics log to OSS: {resolved_cmd}")
+            result = subprocess.run(resolved_cmd, shell=True, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"[Checkpoint] OSS upload warning: {result.stderr.strip()}")
+            else:
+                print(f"[Checkpoint] OSS upload succeeded.")
+
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == "disable":
             return 0
@@ -1043,6 +1067,8 @@ class RayPPOTrainer:
             default_backend=self.config.trainer.logger,
             config=OmegaConf.to_container(self.config, resolve=True),
         )
+        # 保存 local_file logger 引用，供 _save_checkpoint 触发 OSS 上传时获取日志目录
+        self._local_file_logger_ref = logger.logger.get("local_file", None)
 
         self.global_steps = 0
 
@@ -1089,6 +1115,10 @@ class RayPPOTrainer:
                 )
 
                 is_last_step = self.global_steps >= self.total_training_steps
+
+                # Update AIW curriculum step counter for failure logging
+                if self.aiw_curriculum is not None:
+                    self.aiw_curriculum.set_training_step(self.global_steps)
 
                 with _timer("step", timing_raw):
                     # generate a batch
@@ -1218,7 +1248,6 @@ class RayPPOTrainer:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
                         batch.batch["token_level_scores"] = reward_tensor
 
-                        print(f"{list(reward_extra_infos_dict.keys())=}")
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 

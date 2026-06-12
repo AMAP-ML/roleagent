@@ -83,9 +83,11 @@ class TokenAgentEpisodeRewardManager(EpisodeRewardManager):
 
             if already_print_data_sources[data_source] < self.num_examine and np.random.random() < 0.1:
                 already_print_data_sources[data_source] += 1
-                print(f"[{data_source}][prompt]", prompt_str)
-                print(f"[{data_source}][response]", response_str)
-                print(f"[{data_source}][score]", score)
+                import logging as _logging
+                _logger = _logging.getLogger(__name__)
+                _logger.debug("[%s][prompt] %s", data_source, prompt_str)
+                _logger.debug("[%s][response] %s", data_source, response_str)
+                _logger.debug("[%s][score] %s", data_source, score)
 
         if return_dict:
             return {"reward_tensor": reward_tensor, "reward_extra_info": {}}

@@ -105,39 +105,21 @@ _register(DatasetMeta(
 _register(DatasetMeta(
     data_source="simpleqa",
     task_category=2,
-    hf_repo_id="openai/simple-qa",
-    split_map={"train": "train", "test": "test"},
+    hf_repo_id="/mnt/workspace/wxc/Agent/otherdata/simpleqa",
+    split_map={"test": "test"},
     description="OpenAI SimpleQA – factual direct-answer questions",
-))
+)) 
 
-_register(DatasetMeta(
-    data_source="aa_omniscience",
-    task_category=2,
-    hf_repo_id="jackson/aa-omniscience",
-    split_map={"train": "train", "test": "test"},
-    description="AA-Omniscience factual QA benchmark",
-))
 
 # ---- Search QA (category 3) ----------------------------------------------
-
-_SEARCH_DATASETS = [
-    ("searchR1_nq", "PeterJinGo/searchR1_nq"),
-    ("searchR1_triviaqa", "PeterJinGo/searchR1_triviaqa"),
-    ("searchR1_popqa", "PeterJinGo/searchR1_popqa"),
-    ("searchR1_hotpotqa", "PeterJinGo/searchR1_hotpotqa"),
-    ("searchR1_2wikimultihopqa", "PeterJinGo/searchR1_2wikimultihopqa"),
-    ("searchR1_musique", "PeterJinGo/searchR1_musique"),
-    ("searchR1_bamboogle", "PeterJinGo/searchR1_bamboogle"),
-]
-
-for ds_name, hf_repo in _SEARCH_DATASETS:
-    _register(DatasetMeta(
-        data_source=ds_name,
-        task_category=3,
-        hf_repo_id=hf_repo,
-        split_map={"train": "train", "test": "test"},
-        description=f"Search-R1 style QA ({ds_name})",
-    ))
+  
+_register(DatasetMeta(
+    data_source="search_qa",
+    task_category=3,
+    hf_repo_id="/mnt/workspace/wxc/Agent/otherdata/search_qa",
+    split_map={"train": "train", "test": "test"},
+    description=f"Search-R1 style QA",
+))
 
 # ---- Action Env (category 4) ---------------------------------------------
 
@@ -145,6 +127,14 @@ _register(DatasetMeta(
     data_source="alfworld",
     task_category=4,
     description="ALFWorld embodied household tasks",
+))
+
+# "text" is the data_source produced by examples.data_preprocess.prepare
+# when running in text-only mode (e.g. for alfworld standalone training).
+_register(DatasetMeta(
+    data_source="text",
+    task_category=4,
+    description="Generic text-mode data (alfworld standalone)",
 ))
 
 _register(DatasetMeta(

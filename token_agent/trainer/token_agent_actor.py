@@ -146,7 +146,8 @@ class TokenAgentActor(DataParallelPPOActor):
             "responses", "input_ids", "attention_mask", "position_ids",
             "old_log_probs", "advantages",
         ]
-        if multi_turn:
+        has_loss_mask = multi_turn and "loss_mask" in data.batch.keys()
+        if has_loss_mask:
             select_keys.append("loss_mask")
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
@@ -209,7 +210,7 @@ class TokenAgentActor(DataParallelPPOActor):
                     response_length = responses.size(1)
                     attention_mask = micro_data["attention_mask"]
 
-                    if multi_turn:
+                    if has_loss_mask:
                         response_mask = micro_data["loss_mask"][:, -response_length:]
                     else:
                         response_mask = attention_mask[:, -response_length:]

@@ -89,20 +89,13 @@ class TokenAgentRunner:
         print(f"<latent> id={latent_start_id}, </latent> id={latent_end_id}")
 
         # Store in config for downstream use
-        with OmegaConf.read_write(config):
-            if "token_agent" not in config.algorithm:
-                OmegaConf.update(config, "algorithm.token_agent", {})
-            config.algorithm.token_agent.latent_start_id = int(latent_start_id)
-            config.algorithm.token_agent.latent_end_id = int(latent_end_id)
+        # Use flag_override to bypass struct validation when adding new keys
+        OmegaConf.update(config, "algorithm.token_agent.latent_start_id", int(latent_start_id), merge=True, force_add=True)
+        OmegaConf.update(config, "algorithm.token_agent.latent_end_id", int(latent_end_id), merge=True, force_add=True)
 
         # ---- Pass token_agent config to worker level -----------------------
-        with OmegaConf.read_write(config):
-            if not config.actor_rollout_ref.get("token_agent"):
-                OmegaConf.update(config, "actor_rollout_ref.token_agent",
-                                 OmegaConf.to_container(config.algorithm.get("token_agent", {}), resolve=True))
-            else:
-                OmegaConf.merge(config.actor_rollout_ref.token_agent,
-                                config.algorithm.get("token_agent", {}))
+        ta_container = OmegaConf.to_container(config.algorithm.get("token_agent", {}), resolve=True)
+        OmegaConf.update(config, "actor_rollout_ref.token_agent", ta_container, merge=True, force_add=True)
 
         # ---- Worker classes -----------------------------------------------
         if config.actor_rollout_ref.actor.strategy in ["fsdp", "fsdp2"]:

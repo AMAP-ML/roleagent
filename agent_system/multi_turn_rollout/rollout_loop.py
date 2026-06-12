@@ -386,12 +386,18 @@ class TrajectoryCollector:
                 dones = dones.squeeze(1)
 
             if OmegaConf.select(self.config, "algorithm.role_agent.enable_wia", default=False):
-                from role_agent.wia_utils import next_obs_text_for_wia, parse_predict_next, predicate_multiplier, string_similarity
+                from role_agent.wia_utils import next_obs_text_for_wia, parse_predict_next, string_similarity
 
                 max_c = int(OmegaConf.select(self.config, "algorithm.role_agent.text_match_max_chars", default=0) or 0)
                 rewards = np.asarray(rewards, dtype=np.float32).copy()
                 for i in range(batch_size):
                     pred = parse_predict_next(text_actions[i])
+                    # If model did not produce a <predict_next> tag, keep the
+                    # original reward unchanged. This keeps WIA as an optional
+                    # prediction bonus instead of a penalty before the model
+                    # learns to emit the prediction tag.
+                    if pred is None:
+                        continue
                     actual = next_obs_text_for_wia(next_obs, i)
                     # Skip when there is no comparable text (e.g. raw image anchor); avoid bogus sim=0 halving reward.
                     if not actual:
@@ -400,8 +406,7 @@ class TrajectoryCollector:
                     if max_c <= 0 and len(actual) > 8192:
                         continue
                     sim = string_similarity(pred, actual, max_chars=max_c if max_c > 0 else None)
-                    mult = predicate_multiplier(sim)
-                    rewards[i] = float(rewards[i]) * mult
+                    rewards[i] = float(rewards[i]) * (1.0 + 0.2 * sim)
 
             if 'is_action_valid' in infos[0]:
                 batch.non_tensor_batch['is_action_valid'] = np.array([info['is_action_valid'] for info in infos], dtype=bool)

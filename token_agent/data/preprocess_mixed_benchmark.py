@@ -29,85 +29,172 @@ from token_agent.data.dataset_registry import (
     DatasetMeta,
     get_active_datasets,
 )
+from token_agent.prompts.unified_system_prompt import UNIFIED_SYSTEM_PROMPT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 LOCAL_DATA_DIR: Optional[str] = None
 
+# ---------------------------------------------------------------------------
+# Per-dataset output format instructions (format only, no reasoning hints)
+# ---------------------------------------------------------------------------
+
+_FORMAT_INSTRUCTIONS: Dict[str, str] = {
+    # Math reasoning
+    "openai/gsm8k": "IMPORTANT: Do NOT use <answer> tags. You MUST end your response with '#### <number>' (the number only, no units), for example: #### 42",
+    "lighteval/MATH": "IMPORTANT: Do NOT use <answer> tags. You MUST present your final answer inside \\boxed{}, for example: \\boxed{42}",
+    "math_dapo": "IMPORTANT: Do NOT use <answer> tags. You MUST present your final answer inside \\boxed{}, for example: \\boxed{42}",
+    "aime_2024": "IMPORTANT: Do NOT use <answer> tags. You MUST present your final answer inside \\boxed{}, for example: \\boxed{42}",
+    "aime_2025": "IMPORTANT: Do NOT use <answer> tags. You MUST present your final answer inside \\boxed{}, for example: \\boxed{42}",
+    # Extractive QA
+    "squad": "Wrap your answer in <answer> tags, for example: <answer>Paris</answer>",
+    # Direct / search QA
+    "simpleqa": "Wrap your answer in <answer> tags, for example: <answer>Paris</answer>",
+    "search_qa": "Wrap your answer in <answer> tags, for example: <answer>Paris</answer>",
+    # Action environments
+    "alfworld": "Wrap each action in <action> tags, for example: <action>go to desk 1</action>",
+    "webshop": "Wrap each action in <action> tags, for example: <action>click[Buy Now]</action>",
+}
 
 # ---------------------------------------------------------------------------
 # Per-dataset processors: each returns a list[dict] of unified rows
 # ---------------------------------------------------------------------------
 
-def _build_prompt(question: str, system: str = "") -> List[dict]:
+def _build_prompt(
+    question: str,
+    system: str = UNIFIED_SYSTEM_PROMPT,
+    data_source: Optional[str] = None,
+) -> List[dict]:
+    """Build chat-format prompt list. Injects UNIFIED_SYSTEM_PROMPT by default.
+
+    If ``data_source`` is provided and has a registered format instruction,
+    appends a single-line output format requirement to the user message.
+    The instruction describes only the required output format – no reasoning hints.
+    """
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
-    msgs.append({"role": "user", "content": question})
+    format_hint = _FORMAT_INSTRUCTIONS.get(data_source, "") if data_source else ""
+    user_content = f"{question}\n\n{format_hint}" if format_hint else question
+    msgs.append({"role": "user", "content": user_content})
     return msgs
+
+def _build_question_with_hint(question: str, data_source: Optional[str] = None) -> str:
+    """Return the question string with the format hint appended (if any).
+
+    This is used to populate ``env_kwargs["question"]`` so that
+    ``SingleTurnEnvWrapper.reset()`` returns an observation that already
+    contains the output-format instruction.  Without this, the format hint
+    stored in the ``prompt`` field would be silently dropped because the
+    rollout loop reconstructs the prompt from the env observation rather
+    than from the parquet ``prompt`` column.
+    """
+    format_hint = _FORMAT_INSTRUCTIONS.get(data_source, "") if data_source else ""
+    return f"{question}\n\n{format_hint}" if format_hint else question
+
+def _ensure_system_prompt(row: dict) -> None:
+    """Ensure a row's ``prompt`` list starts with the unified system message.
+
+    Modifies in-place. Handles rows from pre-processed parquet files that
+    may have been built without UNIFIED_SYSTEM_PROMPT.
+    """
+    prompt = row.get("prompt")
+    if not isinstance(prompt, list) or len(prompt) == 0:
+        return
+    first = prompt[0]
+    if isinstance(first, dict) and first.get("role") == "system":
+        return
+    row["prompt"] = [{"role": "system", "content": UNIFIED_SYSTEM_PROMPT}] + prompt
 
 
 def process_gsm8k(meta: DatasetMeta, split: str) -> List[dict]:
-    # Prefer local files if provided (HF may be unavailable in some environments).
+    # Priority order:
+    # 1) If local split-specific files exist, use them.
+    # 2) Otherwise, use HF's official train/test split.
+    # 3) Only if HF fails, fall back to ratio split (90/10) on local raw json.
     if LOCAL_DATA_DIR:
-        rows_local = _process_gsm8k_local(meta=meta, split=split)
-        if rows_local:
-            return rows_local
+        rows_local_split = _process_gsm8k_local_split_specific(meta=meta, split=split)
+        if rows_local_split:
+            return rows_local_split
 
     from datasets import load_dataset
     try:
         ds = load_dataset(meta.hf_repo_id, "main", split=meta.split_map[split])
+        rows = []
+        for i, ex in enumerate(ds):
+            answer = ex["answer"].split("####")[-1].strip()
+            rows.append({
+                "data_source": meta.data_source,
+                "task_category": meta.task_category,
+                "prompt": _build_prompt(ex["question"], data_source=meta.data_source),
+                "env_kwargs": {
+                    "ground_truth": answer,
+                    "question": _build_question_with_hint(ex["question"], data_source=meta.data_source),
+                    "data_source": meta.data_source,
+                    "task_category": meta.task_category,
+                },
+                "reward_model": {"ground_truth": answer},
+                "extra_info": {"index": i, "split": split},
+            })
+        return rows
     except Exception as e:
-        logger.warning("Could not load %s from HF: %s. Skipping.", meta.data_source, e)
-        return []
+        logger.warning("Could not load %s from HF: %s.", meta.data_source, e)
 
-    rows = []
-    for i, ex in enumerate(ds):
-        answer = ex["answer"].split("####")[-1].strip()
-        rows.append({
-            "data_source": meta.data_source,
-            "task_category": meta.task_category,
-            "prompt": _build_prompt(ex["question"]),
-            "env_kwargs": {"ground_truth": answer, "question": ex["question"],
-                           "data_source": meta.data_source, "task_category": meta.task_category},
-            "reward_model": {"ground_truth": answer},
-            "extra_info": {"index": i, "split": split},
-        })
-    return rows
+    # HF failed: only then use local 90/10 split fallback.
+    if LOCAL_DATA_DIR:
+        rows_local_ratio = _process_gsm8k_local(meta=meta, split=split)
+        if rows_local_ratio:
+            logger.warning(
+                "Falling back to local ratio split for %s (split=%s).", meta.data_source, split
+            )
+        return rows_local_ratio
+
+    return []
 
 
 def process_math(meta: DatasetMeta, split: str) -> List[dict]:
-    # Prefer local math files if provided.
+    # Priority order:
+    # 1) If local split-specific files exist, use them.
+    # 2) Otherwise, use HF's official split when hf_repo_id is available.
+    # 3) Only if HF fails (or hf_repo_id is None), fall back to local ratio split.
     if LOCAL_DATA_DIR:
-        rows_local = _process_math_local(meta=meta, split=split)
-        if rows_local:
-            return rows_local
+        rows_local_split = _process_math_local_split_specific(meta=meta, split=split)
+        if rows_local_split:
+            return rows_local_split
 
-    from datasets import load_dataset
-    try:
-        ds = load_dataset(meta.hf_repo_id, split=meta.split_map[split])
-    except Exception as e:
-        logger.warning(
-            "Could not load %s (hf_repo_id=%s): %s. Skipping this dataset.",
-            meta.data_source,
-            meta.hf_repo_id,
-            e,
-        )
-        return []
+    if meta.hf_repo_id is not None:
+        from datasets import load_dataset
+        try:
+            ds = load_dataset(meta.hf_repo_id, split=meta.split_map[split])
+            rows = []
+            for i, ex in enumerate(ds):
+                rows.append({
+                    "data_source": meta.data_source,
+                    "task_category": meta.task_category,
+                    "prompt": _build_prompt(ex["problem"], data_source=meta.data_source),
+                    "env_kwargs": {
+                        "ground_truth": ex["solution"],
+                        "question": _build_question_with_hint(ex["problem"], data_source=meta.data_source),
+                        "data_source": meta.data_source,
+                        "task_category": meta.task_category,
+                    },
+                    "reward_model": {"ground_truth": ex["solution"]},
+                    "extra_info": {"index": i, "split": split},
+                })
+            return rows
+        except Exception as e:
+            logger.warning(
+                "Could not load %s (hf_repo_id=%s): %s. Falling back to local ratio split.",
+                meta.data_source,
+                meta.hf_repo_id,
+                e,
+            )
 
-    rows = []
-    for i, ex in enumerate(ds):
-        rows.append({
-            "data_source": meta.data_source,
-            "task_category": meta.task_category,
-            "prompt": _build_prompt(ex["problem"]),
-            "env_kwargs": {"ground_truth": ex["solution"], "question": ex["problem"],
-                           "data_source": meta.data_source, "task_category": meta.task_category},
-            "reward_model": {"ground_truth": ex["solution"]},
-            "extra_info": {"index": i, "split": split},
-        })
-    return rows
+    if LOCAL_DATA_DIR:
+        return _process_math_local(meta=meta, split=split)
+
+    return []
 
 
 def _find_first_existing_file(root: str, candidates: List[str]) -> Optional[str]:
@@ -210,7 +297,7 @@ def _process_gsm8k_local(meta: DatasetMeta, split: str) -> List[dict]:
         rows.append({
             "data_source": meta.data_source,
             "task_category": meta.task_category,
-            "prompt": _build_prompt(text),
+            "prompt": _build_prompt(text, data_source=meta.data_source),
             "env_kwargs": {
                 "ground_truth": answer,
                 "question": text,
@@ -223,6 +310,153 @@ def _process_gsm8k_local(meta: DatasetMeta, split: str) -> List[dict]:
     return rows
 
 
+def _process_gsm8k_local_split_specific(meta: DatasetMeta, split: str) -> List[dict]:
+    """Try to load gsm8k from local *split-specific* files.
+
+    This is used to prioritize official train/test splits when they exist locally.
+    If only an unsplit raw file is available (e.g. gsm8k.json), this returns [] so
+    that we can fall back to HF (or ratio split later).
+    """
+    assert LOCAL_DATA_DIR is not None
+    root = _local_root_for_data_source(meta.data_source)
+
+    # Common local layouts produced by other scripts: train.parquet/test.parquet or
+    # train.jsonl/test.jsonl under the dataset folder.
+    parquet_candidates = [
+        f"{split}.parquet",
+        f"gsm8k_{split}.parquet",
+        f"gsm8k-{split}.parquet",
+        f"*{split}*.parquet",
+    ]
+    jsonl_candidates = [
+        f"{split}.jsonl",
+        f"gsm8k_{split}.jsonl",
+        f"gsm8k-{split}.jsonl",
+        f"*{split}*.jsonl",
+    ]
+    json_candidates = [
+        f"{split}.json",
+        f"gsm8k_{split}.json",
+        f"gsm8k-{split}.json",
+        f"*{split}*.json",
+    ]
+
+    selected_path: Optional[str] = None
+    selected_kind: str = ""
+
+    for pat in parquet_candidates:
+        matches = glob.glob(os.path.join(root, pat))
+        if matches:
+            selected_path = matches[0]
+            selected_kind = "parquet"
+            break
+    if selected_path is None:
+        for pat in jsonl_candidates:
+            matches = glob.glob(os.path.join(root, pat))
+            if matches:
+                selected_path = matches[0]
+                selected_kind = "jsonl"
+                break
+    if selected_path is None:
+        for pat in json_candidates:
+            matches = glob.glob(os.path.join(root, pat))
+            if matches:
+                selected_path = matches[0]
+                selected_kind = "json"
+                break
+
+    if not selected_path:
+        return []
+
+    rows: List[dict] = []
+    if selected_kind == "parquet":
+        df = pd.read_parquet(selected_path)
+        # Heuristics for column naming.
+        q_col = next((c for c in ["question", "problem", "text"] if c in df.columns), None)
+        a_col = next((c for c in ["answer", "solution", "label"] if c in df.columns), None)
+        if q_col is None or a_col is None:
+            return []
+        for i, ex in enumerate(df.to_dict(orient="records")):
+            question = ex.get(q_col) or ""
+            label = ex.get(a_col)
+            if question == "" or label is None:
+                continue
+            answer = str(label).strip()
+            rows.append({
+                "data_source": meta.data_source,
+                "task_category": meta.task_category,
+                "prompt": _build_prompt(question, data_source=meta.data_source),
+                "env_kwargs": {
+                    "ground_truth": answer,
+                    "question": _build_question_with_hint(question, data_source=meta.data_source),
+                    "data_source": meta.data_source,
+                    "task_category": meta.task_category,
+                },
+                "reward_model": {"ground_truth": answer},
+                "extra_info": {"index": i, "split": split},
+            })
+        return rows
+
+    if selected_kind == "jsonl":
+        for i, ex in enumerate(_jsonl_iter(selected_path)):
+            question = ex.get("question") or ex.get("problem") or ex.get("text") or ""
+            label = (
+                ex.get("answer")
+                if "answer" in ex
+                else ex.get("solution")
+                if "solution" in ex
+                else ex.get("label")
+            )
+            if question == "" or label is None:
+                continue
+            answer = str(label).strip()
+            rows.append({
+                "data_source": meta.data_source,
+                "task_category": meta.task_category,
+                "prompt": _build_prompt(question, data_source=meta.data_source),
+                "env_kwargs": {
+                    "ground_truth": answer,
+                    "question": _build_question_with_hint(question, data_source=meta.data_source),
+                    "data_source": meta.data_source,
+                    "task_category": meta.task_category,
+                },
+                "reward_model": {"ground_truth": answer},
+                "extra_info": {"index": i, "split": split},
+            })
+        return rows
+
+    # selected_kind == "json"
+    with open(selected_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        return []
+    for i, ex in enumerate(data):
+        question = ex.get("question") or ex.get("problem") or ex.get("text") or ""
+        label = (
+            ex.get("answer")
+            if "answer" in ex
+            else ex.get("solution")
+            if "solution" in ex
+            else ex.get("label")
+        )
+        if question == "" or label is None:
+            continue
+        answer = str(label).strip()
+        rows.append({
+            "data_source": meta.data_source,
+            "task_category": meta.task_category,
+            "prompt": _build_prompt(question, data_source=meta.data_source),
+            "env_kwargs": {
+                "ground_truth": answer,
+                "question": _build_question_with_hint(question, data_source=meta.data_source),
+                "data_source": meta.data_source,
+                "task_category": meta.task_category,
+            },
+            "reward_model": {"ground_truth": answer},
+            "extra_info": {"index": i, "split": split},
+        })
+    return rows
+ 
 def _process_math_local(meta: DatasetMeta, split: str) -> List[dict]:
     assert LOCAL_DATA_DIR is not None
     root = _local_root_for_data_source(meta.data_source)
@@ -273,10 +507,98 @@ def _process_math_local(meta: DatasetMeta, split: str) -> List[dict]:
         rows.append({
             "data_source": meta.data_source,
             "task_category": meta.task_category,
-            "prompt": _build_prompt(question),
+            "prompt": _build_prompt(question, data_source=meta.data_source),
             "env_kwargs": {
                 "ground_truth": answer,
-                "question": question,
+                "question": _build_question_with_hint(question, data_source=meta.data_source),
+                "data_source": meta.data_source,
+                "task_category": meta.task_category,
+            },
+            "reward_model": {"ground_truth": answer},
+            "extra_info": {"index": i, "split": split},
+        })
+    return rows
+
+
+def _process_math_local_split_specific(meta: DatasetMeta, split: str) -> List[dict]:
+    """Try to load math from local split-specific files (train/test).
+
+    If only an unsplit raw jsonl exists (e.g. math500.jsonl), return [] so
+    that we can prefer HF official splits when possible.
+    """
+    assert LOCAL_DATA_DIR is not None
+    root = _local_root_for_data_source(meta.data_source)
+
+    parquet_candidates = [
+        f"{split}.parquet",
+        f"math_{split}.parquet",
+        f"*{split}*.parquet",
+    ]
+    jsonl_candidates = [
+        f"{split}.jsonl",
+        f"math_{split}.jsonl",
+        f"*{split}*.jsonl",
+    ]
+
+    selected_path: Optional[str] = None
+    selected_kind: str = ""
+    for pat in parquet_candidates:
+        matches = glob.glob(os.path.join(root, pat))
+        if matches:
+            selected_path = matches[0]
+            selected_kind = "parquet"
+            break
+    if selected_path is None:
+        for pat in jsonl_candidates:
+            matches = glob.glob(os.path.join(root, pat))
+            if matches:
+                selected_path = matches[0]
+                selected_kind = "jsonl"
+                break
+
+    if not selected_path:
+        return []
+
+    rows: List[dict] = []
+    if selected_kind == "parquet":
+        df = pd.read_parquet(selected_path)
+        q_col = next((c for c in ["problem", "question"] if c in df.columns), None)
+        a_col = next((c for c in ["solution", "answer"] if c in df.columns), None)
+        if q_col is None or a_col is None:
+            return []
+        for i, ex in enumerate(df.to_dict(orient="records")):
+            question = ex.get(q_col) or ""
+            answer = ex.get(a_col) or ""
+            if question == "" or answer == "":
+                continue
+            rows.append({
+                "data_source": meta.data_source,
+                "task_category": meta.task_category,
+                "prompt": _build_prompt(question, data_source=meta.data_source),
+                "env_kwargs": {
+                    "ground_truth": answer,
+                    "question": _build_question_with_hint(question, data_source=meta.data_source),
+                    "data_source": meta.data_source,
+                    "task_category": meta.task_category,
+                },
+                "reward_model": {"ground_truth": answer},
+                "extra_info": {"index": i, "split": split},
+            })
+        return rows
+
+    # selected_kind == "jsonl"
+    for i, ex in enumerate(_jsonl_iter(selected_path)):
+        question = ex.get("problem") or ex.get("question") or ""
+        answer = ex.get("solution") or ex.get("answer") or ""
+        if question == "" or answer == "":
+            continue
+        rows.append({
+            "data_source": meta.data_source,
+            "task_category": meta.task_category,
+            "prompt": _build_prompt(question, data_source=meta.data_source),
+            "env_kwargs": {
+                "ground_truth": answer,
+                "question": _build_question_with_hint(question, data_source=meta.data_source),
                 "data_source": meta.data_source,
                 "task_category": meta.task_category,
             },
@@ -287,13 +609,11 @@ def _process_math_local(meta: DatasetMeta, split: str) -> List[dict]:
 
 
 def _process_aime_local(meta: DatasetMeta, split: str) -> List[dict]:
-    """Load AIME-like problems from local files if present."""
+    """Load AIME-like problems from local files.
+    AIME is test-only: all samples go to the test set."""
     assert LOCAL_DATA_DIR is not None
     root = _local_root_for_data_source(meta.data_source)
 
-    # Prefer parquet (your local AIME files are parquet).
-    # - aime24.parquet: columns = [id, problem, solution, url]
-    # - AIME25_v2.parquet: columns = [id, problem, answer, year]
     data_source = meta.data_source
     parquet_candidates: List[str] = []
     if "2024" in data_source:
@@ -317,18 +637,11 @@ def _process_aime_local(meta: DatasetMeta, split: str) -> List[dict]:
             logger.warning("Failed reading local AIME parquet %s: %s", parquet_path, e)
         else:
             if df is not None and len(df) > 0:
-                n = len(df)
-                cut = int(0.9 * n)
                 q_col = "problem" if "problem" in df.columns else ("question" if "question" in df.columns else None)
                 gt_col = "solution" if "solution" in df.columns else ("answer" if "answer" in df.columns else None)
                 if q_col is not None and gt_col is not None:
                     rows: List[dict] = []
                     for i, ex in enumerate(df.to_dict(orient="records")):
-                        is_train = i < cut
-                        if split == "train" and not is_train:
-                            continue
-                        if split == "test" and is_train:
-                            continue
                         question = ex.get(q_col, "") or ""
                         answer = ex.get(gt_col, "") or ""
                         if question == "" or answer == "":
@@ -336,20 +649,19 @@ def _process_aime_local(meta: DatasetMeta, split: str) -> List[dict]:
                         rows.append({
                             "data_source": meta.data_source,
                             "task_category": meta.task_category,
-                            "prompt": _build_prompt(question),
+                            "prompt": _build_prompt(question, data_source=meta.data_source),
                             "env_kwargs": {
                                 "ground_truth": answer,
-                                "question": question,
+                                "question": _build_question_with_hint(question, data_source=meta.data_source),
                                 "data_source": meta.data_source,
                                 "task_category": meta.task_category,
                             },
                             "reward_model": {"ground_truth": answer},
-                            "extra_info": {"index": i, "split": split},
+                            "extra_info": {"index": i, "split": "test"},
                         })
                     return rows
 
-    # Try common filename patterns.
-    data_source = meta.data_source  # e.g. aime_2024
+    # Fallback: jsonl
     patterns: List[str] = []
     if "2024" in data_source:
         patterns = ["*aime*2024*.jsonl", "*aime*24*.jsonl", "*aime2024*"]
@@ -367,48 +679,35 @@ def _process_aime_local(meta: DatasetMeta, split: str) -> List[dict]:
     if not path:
         return []
 
-    # Expect jsonl lines with problem/answer (or question/answer).
-    try:
-        n = sum(1 for _ in _jsonl_iter(path))
-    except Exception as e:
-        logger.warning("Failed counting local aime file %s: %s", path, e)
-        return []
-
-    if n == 0:
-        return []
-
-    cut = int(0.9 * n)
     rows: List[dict] = []
     for i, ex in enumerate(_jsonl_iter(path)):
-        is_train = i < cut
-        if split == "train" and not is_train:
-            continue
-        if split == "test" and is_train:
-            continue
-
         question = ex.get("problem") or ex.get("question") or ""
         answer = ex.get("answer") or ex.get("solution") or ""
         if question == "" or answer == "":
             continue
-
         rows.append({
             "data_source": meta.data_source,
             "task_category": meta.task_category,
-            "prompt": _build_prompt(question),
+            "prompt": _build_prompt(question, data_source=meta.data_source),
             "env_kwargs": {
                 "ground_truth": answer,
-                "question": question,
+                "question": _build_question_with_hint(question, data_source=meta.data_source),
                 "data_source": meta.data_source,
                 "task_category": meta.task_category,
             },
             "reward_model": {"ground_truth": answer},
-            "extra_info": {"index": i, "split": split},
+            "extra_info": {"index": i, "split": "test"},
         })
     return rows
 
 
+# Datasets that only appear in the test set (too few samples / no train split).
+TEST_ONLY_SOURCES = {"aime_2024", "aime_2025"}
+
+
 def process_aime(meta: DatasetMeta, split: str) -> List[dict]:
-    # AIME is expected to be local-only in your setup.
+    if split == "train":
+        return []
     if LOCAL_DATA_DIR:
         return _process_aime_local(meta=meta, split=split)
     return []
@@ -520,10 +819,10 @@ def _process_squad_local(meta: DatasetMeta, split: str) -> List[dict]:
             rows.append({
                 "data_source": meta.data_source,
                 "task_category": meta.task_category,
-                "prompt": _build_prompt(question_str),
+                "prompt": _build_prompt(question_str, data_source=meta.data_source),
                 "env_kwargs": {
                     "ground_truth": answers,
-                    "question": question_str,
+                    "question": _build_question_with_hint(question_str, data_source=meta.data_source),
                     "data_source": meta.data_source,
                     "task_category": meta.task_category,
                 },
@@ -556,10 +855,10 @@ def _process_squad_local(meta: DatasetMeta, split: str) -> List[dict]:
                 rows.append({
                     "data_source": meta.data_source,
                     "task_category": meta.task_category,
-                    "prompt": _build_prompt(question_str),
+                    "prompt": _build_prompt(question_str, data_source=meta.data_source),
                     "env_kwargs": {
                         "ground_truth": answers,
-                        "question": question_str,
+                        "question": _build_question_with_hint(question_str, data_source=meta.data_source),
                         "data_source": meta.data_source,
                         "task_category": meta.task_category,
                     },
@@ -573,7 +872,6 @@ def _process_squad_local(meta: DatasetMeta, split: str) -> List[dict]:
             return rows
 
     return []
-
 
 def process_squad(meta: DatasetMeta, split: str) -> List[dict]:
     # Prefer local SQuAD artifacts if provided.
@@ -596,51 +894,31 @@ def process_squad(meta: DatasetMeta, split: str) -> List[dict]:
         rows.append({
             "data_source": meta.data_source,
             "task_category": meta.task_category,
-            "prompt": _build_prompt(question),
-            "env_kwargs": {"ground_truth": answers, "question": question,
+            "prompt": _build_prompt(question, data_source=meta.data_source),
+            "env_kwargs": {"ground_truth": answers, "question": _build_question_with_hint(question, data_source=meta.data_source),
                            "data_source": meta.data_source, "task_category": meta.task_category},
             "reward_model": {"ground_truth": {"target": answers}},
             "extra_info": {"index": i, "split": split},
         })
     return rows
 
-
 def process_simpleqa(meta: DatasetMeta, split: str) -> List[dict]:
     """OpenAI SimpleQA – attempt HF load; fall back to placeholder."""
     rows = []
     try:
         from datasets import load_dataset
-        ds = load_dataset(meta.hf_repo_id, split=meta.split_map.get(split, split))
+        if split == "train":
+            ds = []
+        else:
+            ds = load_dataset(meta.hf_repo_id, split=meta.split_map.get(split, split))
         for i, ex in enumerate(ds):
             question = ex.get("problem", ex.get("question", ""))
             answer = ex.get("answer", ex.get("solution", ""))
             rows.append({
                 "data_source": meta.data_source,
                 "task_category": meta.task_category,
-                "prompt": _build_prompt(question),
-                "env_kwargs": {"ground_truth": answer, "question": question,
-                               "data_source": meta.data_source, "task_category": meta.task_category},
-                "reward_model": {"ground_truth": {"target": [answer] if isinstance(answer, str) else answer}},
-                "extra_info": {"index": i, "split": split},
-            })
-    except Exception as e:
-        logger.warning("Could not load %s: %s. Creating placeholder.", meta.data_source, e)
-    return rows
-
-
-def process_aa_omniscience(meta: DatasetMeta, split: str) -> List[dict]:
-    rows = []
-    try:
-        from datasets import load_dataset
-        ds = load_dataset(meta.hf_repo_id, split=meta.split_map.get(split, split))
-        for i, ex in enumerate(ds):
-            question = ex.get("question", "")
-            answer = ex.get("answer", "")
-            rows.append({
-                "data_source": meta.data_source,
-                "task_category": meta.task_category,
-                "prompt": _build_prompt(question),
-                "env_kwargs": {"ground_truth": answer, "question": question,
+                "prompt": _build_prompt(question, data_source=meta.data_source),
+                "env_kwargs": {"ground_truth": answer, "question": _build_question_with_hint(question, data_source=meta.data_source),
                                "data_source": meta.data_source, "task_category": meta.task_category},
                 "reward_model": {"ground_truth": {"target": [answer] if isinstance(answer, str) else answer}},
                 "extra_info": {"index": i, "split": split},
@@ -651,70 +929,84 @@ def process_aa_omniscience(meta: DatasetMeta, split: str) -> List[dict]:
 
 
 def process_search_r1(meta: DatasetMeta, split: str) -> List[dict]:
-    """
-    Search-R1 datasets are already preprocessed via the existing
-    verl-agent pipeline. This function downloads the raw HF data and
-    converts it into the unified schema.
-    """
-    # Local-first: if your TOKEN_AGENT_DATA_DIR already contains the unified
-    # mixed parquet files (train.parquet / test.parquet) that include
-    # searchR1_* rows, we can directly filter them and skip HF download.
-    if LOCAL_DATA_DIR:
-        # Restrict local search loading to TOKEN_AGENT_DATA_DIR/search_qa/
-        # to avoid mixing raw datasets across directories.
-        candidate_roots = [os.path.join(LOCAL_DATA_DIR, "search_qa")]
-        parquet_file = "train.parquet" if split == "train" else "test.parquet"
-        for root in candidate_roots:
-            mixed_path = os.path.join(root, parquet_file)
-            if not os.path.exists(mixed_path):
-                continue
-            try:
-                df = pd.read_parquet(mixed_path)
-                if "data_source" not in df.columns:
-                    continue
-                df_sel = df[df["data_source"].astype(str) == meta.data_source]
-                if len(df_sel) > 0:
-                    return df_sel.to_dict(orient="records")
-            except Exception:
-                continue
+    # Align with original verl-agent usage: read preprocessed search parquet
+    # from local train/test files instead of loading PeterJinGo/searchR1_*.
+    if not LOCAL_DATA_DIR:
+        logger.warning(
+            "LOCAL_DATA_DIR is required for search_qa. Expected %s split parquet under TOKEN_AGENT_DATA_DIR/search_qa.",
+            split,
+        )
+        return []
 
-    rows = []
+    root = os.path.join(LOCAL_DATA_DIR, "search_qa")
+    parquet_file = "train.parquet" if split == "train" else "test.parquet"
+    mixed_path = os.path.join(root, parquet_file)
+    if not os.path.exists(mixed_path):
+        logger.warning("search_qa parquet not found: %s", mixed_path)
+        return []
+
     try:
-        from datasets import load_dataset
-        ds = load_dataset(meta.hf_repo_id, split=meta.split_map.get(split, split))
-        for i, ex in enumerate(ds):
-            question = ex.get("question", "")
-            golden = ex.get("golden_answers", ex.get("answer", []))
-            if isinstance(golden, str):
-                golden = [golden]
-            gt = {"target": golden}
-            tools_kwargs = {
-                "search": {
-                    "create_kwargs": {
-                        "ground_truth": gt,
-                        "question": question,
-                        "data_source": meta.data_source,
-                    }
-                }
-            }
-            rows.append({
-                "data_source": meta.data_source,
-                "task_category": meta.task_category,
-                "prompt": _build_prompt(question),
-                "env_kwargs": {"ground_truth": gt, "question": question,
-                               "data_source": meta.data_source, "task_category": meta.task_category},
-                "reward_model": {"ground_truth": gt},
-                "extra_info": {
-                    "index": i,
-                    "split": split,
-                    "need_tools_kwargs": True,
-                    "tools_kwargs": tools_kwargs,
-                },
-            })
+        df = pd.read_parquet(mixed_path)
     except Exception as e:
-        logger.warning("Could not load %s: %s", meta.data_source, e)
-    return rows
+        logger.warning("Failed reading search_qa parquet %s: %s", mixed_path, e)
+        return []
 
+    rows: List[dict] = []
+    for i, rec in enumerate(df.to_dict(orient="records")):
+        # Round-trip through JSON to convert all numpy/pandas scalar types
+        # (numpy arrays, numpy int64, etc.) into plain Python objects, and
+        # to ensure every complex field is a standard dict/list/str.
+        try:
+            rec = json.loads(json.dumps(rec, default=str))
+        except Exception:
+            continue
+
+        prompt = rec.get("prompt")
+        if isinstance(prompt, str):
+            try:
+                prompt = json.loads(prompt)
+            except Exception:
+                prompt = _build_prompt(prompt, data_source=meta.data_source)
+        if not isinstance(prompt, list):
+            prompt = _build_prompt(str(prompt, data_source=meta.data_source) if prompt else "", data_source=meta.data_source)
+
+        env_kwargs = rec.get("env_kwargs")
+        if not isinstance(env_kwargs, dict):
+            env_kwargs = {}
+
+        # Normalise ground_truth inside env_kwargs to {"target": [...]} format,
+        # which is what SearchEnv.compute_score expects (ground_truth["target"]).
+        # The raw search_qa parquet stores ground_truth as a plain list or string.
+        raw_gt = env_kwargs.get("ground_truth")
+        if raw_gt is not None and not isinstance(raw_gt, dict):
+            if isinstance(raw_gt, str):
+                raw_gt = [raw_gt]
+            elif not isinstance(raw_gt, list):
+                raw_gt = [str(raw_gt)]
+            env_kwargs["ground_truth"] = {"target": raw_gt}
+
+        reward_model = rec.get("reward_model")
+        if not isinstance(reward_model, dict):
+            reward_model = None
+
+        extra_info = rec.get("extra_info")
+        if not isinstance(extra_info, dict):
+            extra_info = {}
+        extra_info.setdefault("index", i)
+        extra_info.setdefault("split", split)
+
+        normalised = {
+            "data_source": rec.get("data_source", meta.data_source),
+            "task_category": rec.get("task_category", meta.task_category),
+            "prompt": prompt,
+            "env_kwargs": env_kwargs,
+            "reward_model": reward_model,
+            "extra_info": extra_info,
+        }
+        _ensure_system_prompt(normalised)
+        rows.append(normalised)
+    return rows
+    
 
 def process_env_placeholder(meta: DatasetMeta, split: str) -> List[dict]:
     """
@@ -745,16 +1037,14 @@ _PROCESSORS: Dict[str, Callable] = {
     "aime_2025": process_aime,
     "squad": process_squad,
     "simpleqa": process_simpleqa,
-    "aa_omniscience": process_aa_omniscience,
     "alfworld": process_env_placeholder,
     "webshop": process_env_placeholder,
     "sokoban": process_env_placeholder,
+    "search_qa": process_search_r1,
     "ezpoints": process_env_placeholder,
 }
 
-for _ds in ["searchR1_nq", "searchR1_triviaqa", "searchR1_popqa",
-            "searchR1_hotpotqa", "searchR1_2wikimultihopqa",
-            "searchR1_musique", "searchR1_bamboogle"]:
+for _ds in ["search_qa"]:
     _PROCESSORS[_ds] = process_search_r1
 
 for _mm in ["mmstar", "sqa", "mmvet", "pope", "mmb", "math_v", "ai2d"]:
@@ -801,6 +1091,14 @@ def main():
     os.makedirs(local_dir, exist_ok=True)
     active_cats = set(int(c) for c in args.active_categories.split(","))
 
+    try:
+        sample_ratios: Dict[str, float] = json.loads(args.sample_ratios)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"--sample_ratios must be a valid JSON dict, got: {args.sample_ratios!r}") from e
+
+    import random
+    random.seed(42)
+
     for split in ["train", "test"]:
         all_rows: List[dict] = []
         for meta in get_active_datasets():
@@ -814,14 +1112,44 @@ def main():
             rows = process_dataset(meta, split)
             if args.max_per_dataset and len(rows) > args.max_per_dataset:
                 rows = rows[: args.max_per_dataset]
-            logger.info("  -> %d rows", len(rows))
+
+            ratio = sample_ratios.get(meta.data_source)
+            if ratio is not None:
+                if not (0.0 < ratio <= 1.0):
+                    raise ValueError(
+                        f"sample_ratios[{meta.data_source!r}] must be in (0, 1], got {ratio}"
+                    )
+                sample_size = max(1, int(len(rows) * ratio))
+                rows = random.sample(rows, sample_size)
+                logger.info("  -> %d rows (sampled %.0f%% from original)", len(rows), ratio * 100)
+            else:
+                logger.info("  -> %d rows", len(rows))
             all_rows.extend(rows)
 
         if not all_rows:
             logger.warning("No rows for split=%s", split)
             continue
+        for row in all_rows:
+            _ensure_system_prompt(row)
 
-        df = pd.DataFrame(all_rows)
+        # Serialise env_kwargs and reward_model as JSON strings before writing
+        # to parquet. These nested dicts have inconsistent internal schemas
+        # across datasets (e.g. ground_truth is str in gsm8k but List[str] in
+        # squad), which causes pyarrow struct-column schema conflicts.
+        # RLHFDataset.__getitem__ deserialises them back with json.loads.
+        serialised_rows = []
+        for row in all_rows:
+            serialised_row = dict(row)
+            env_kwargs = serialised_row.get("env_kwargs")
+            serialised_row["env_kwargs"] = (
+                json.dumps(env_kwargs, default=str) if isinstance(env_kwargs, dict) else "{}"
+            )
+            reward_model = serialised_row.get("reward_model")
+            serialised_row["reward_model"] = (
+                json.dumps(reward_model, default=str) if isinstance(reward_model, dict) else None
+            )
+            serialised_rows.append(serialised_row)
+        df = pd.DataFrame(serialised_rows)
         out_path = os.path.join(local_dir, f"{split}.parquet")
         df.to_parquet(out_path, index=False)
         logger.info("Saved %d rows to %s", len(df), out_path)

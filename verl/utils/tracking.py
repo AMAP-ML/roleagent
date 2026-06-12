@@ -33,7 +33,7 @@ class Tracking:
         logger: Dictionary of initialized logger instances for each backend.
     """
 
-    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console", "clearml"]
+    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console", "clearml", "local_file"]
 
     def __init__(self, project_name, experiment_name, default_backend: Union[str, List[str]] = "console", config=None):
         if isinstance(default_backend, str):
@@ -123,6 +123,9 @@ class Tracking:
 
         if "clearml" in default_backend:
             self.logger["clearml"] = ClearMLLogger(project_name, experiment_name, config)
+
+        if "local_file" in default_backend:
+            self.logger["local_file"] = LocalFileLogger(project_name, experiment_name)
 
     def log(self, data, step, backend=None):
         for default_backend, logger_instance in self.logger.items():
@@ -244,6 +247,34 @@ def _transform_params_to_json_serializable(x, convert_list_to_dict: bool):
         return x.value
 
     return x
+
+
+class LocalFileLogger:
+    """将每个 step 的 metrics 追加写入本地 JSONL 文件，供离线队列环境使用。
+
+    日志文件路径：{log_dir}/{project_name}/{experiment_name}/metrics.jsonl
+    每行是一个 JSON 对象，包含 step 和所有 metrics 字段。
+    日志目录优先从环境变量 LOCAL_LOG_DIR 读取，默认为 ./verl_logs。
+    """
+
+    def __init__(self, project_name: str, experiment_name: str):
+        import os
+
+        log_base_dir = os.environ.get("LOCAL_LOG_DIR", "./verl_logs")
+        self.log_dir = os.path.join(log_base_dir, project_name, experiment_name)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.log_file_path = os.path.join(self.log_dir, "metrics.jsonl")
+        print(f"[LocalFileLogger] Writing metrics to: {self.log_file_path}")
+
+    def log(self, data: Dict[str, Any], step: int):
+        import json
+
+        record = {"step": step, **data}
+        with open(self.log_file_path, "a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(record, default=str) + "\n")
+
+    def get_log_dir(self) -> str:
+        return self.log_dir
 
 
 def _flatten_dict(raw: Dict[str, Any], *, sep: str) -> Dict[str, Any]:

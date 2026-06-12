@@ -41,13 +41,33 @@ token_agent/
 
 | ID | 名称 | 数据集 | 思维模式 |
 |----|------|--------|----------|
-| 0 | math_reasoning | GSM8K, MATH | 需要长链推理 |
+| 0 | math_reasoning | GSM8K, MATH, math_dapo, aime_2024*, aime_2025* | 需要长链推理 |
 | 1 | quick_qa | SQuAD | 快问快答，无需深度思考 |
 | 2 | direct_qa | SimpleQA, AA-Omniscience | 直接回答，无需搜索 |
 | 3 | search_qa | NQ, TriviaQA, PopQA, HotpotQA, 2Wiki, MuSiQue, Bamboogle | 需要搜索工具 |
 | 4 | action_env | ALFWorld, WebShop | 需要交互式动作 |
 | 5 | game_env | Sokoban, EZPoints | （接口已实现，暂不混入训练） |
 | 6 | multimodal | MMStar, SQA, MMVet, ... | （接口已实现，暂不混入训练） |
+
+\* aime_2024、aime_2025 数据量少且无 train split，**仅进入测试集**。
+
+### 训练集 / 测试集划分
+
+| cat | 数据集 | 训练集 | 测试集 |
+|-----|--------|--------|--------|
+| 0 | openai/gsm8k | ✓ | ✓ |
+| 0 | lighteval/MATH | ✓ | ✓ |
+| 0 | math_dapo | ✓ | ✓ |
+| 0 | aime_2024 | ✗ | ✓ |
+| 0 | aime_2025 | ✗ | ✓ |
+| 1 | squad | ✓ | ✓ |
+| 2 | simpleqa | ✓ | ✓ |
+| 2 | aa_omniscience | ✓ | ✓ |
+| 3 | searchR1_nq/triviaqa/popqa/hotpotqa/2wiki/musique/bamboogle | ✓ | ✓ |
+| 4 | alfworld | ✓（环境自带 train split） | ✓ |
+| 4 | webshop | ✓（环境自带 train split） | ✓ |
+
+**所有样本的 system prompt 统一使用 `UNIFIED_SYSTEM_PROMPT`（包含全部工具描述），训练和评估阶段一致。**
 
 ## 快速开始
 
@@ -66,8 +86,8 @@ python -m token_agent.data.preprocess_mixed_benchmark \
 ```
 
 输出文件：
-- `~/data/token_agent_mixed/train.parquet` — 训练集
-- `~/data/token_agent_mixed/test.parquet` — 测试集
+- `/mnt/workspace/wxc/roleagent/data/token_agent_mixed/train.parquet` — 训练集
+- `/mnt/workspace/wxc/roleagent/data/token_agent_mixed/test.parquet` — 测试集
 
 每行包含统一格式：`data_source`, `task_category`, `prompt`, `env_kwargs`, `reward_model`, `extra_info`。
 
@@ -76,12 +96,12 @@ python -m token_agent.data.preprocess_mixed_benchmark \
 先训练 GRPO baseline，观察它在混合 benchmark 上的行为：
 
 ```bash
-bash token_agent/scripts/train_grpo_baseline.sh Qwen/Qwen3-30B-A3B 8
+bash token_agent/scripts/train_grpo_baseline.sh Qwen/Qwen2.5-3B-Instruct 8
 
 # 或者直接用 Hydra overrides
 python -m token_agent.trainer.main_token_agent \
     --config-path ../config --config-name grpo_baseline_trainer \
-    actor_rollout_ref.model.path=Qwen/Qwen3-30B-A3B \
+    actor_rollout_ref.model.path=Qwen/Qwen2.5-3B-Instruct \
     trainer.n_gpus_per_node=8
 ```
 
@@ -95,7 +115,7 @@ python -m token_agent.trainer.main_token_agent \
 ```bash
 # train_token_agent.sh 接受 Hydra overrides 而非位置参数
 bash token_agent/scripts/train_token_agent.sh \
-    actor_rollout_ref.model.path=Qwen/Qwen3-30B-A3B \
+    actor_rollout_ref.model.path=Qwen/Qwen2.5-3B-Instruct \
     trainer.n_gpus_per_node=8
 ```
 
@@ -173,7 +193,7 @@ python -m token_agent.analysis.failure_mode_analysis \
 
 仅修改了 2 个上游文件：
 
-1. **`verl/utils/reward_score/__init__.py`** — 新增 `squad`, `simpleqa`, `aa_omniscience` 的 reward 计算分支
+1. **`verl/utils/reward_score/__init__.py`** — 新增 `squad`, `simpleqa` 的 reward 计算分支
 2. **`agent_system/environments/env_manager.py`** — 在 `make_envs()` 中添加 `"mixed"` 环境的路由
 
 所有其他代码均在 `token_agent/` 下，不影响上游功能。
